@@ -3,6 +3,7 @@ const app = express()
 const cors = require("cors")
 const dotenv = require("dotenv")
 const port =5000 || process.env.PORT
+const rateLimit = require("express-rate-limit");
 dotenv.config();
      
 app.use(cors({
@@ -19,7 +20,7 @@ const userRoutes = require("./routes/userRoutes")
 app.use('/api/cart', cartRoutes); // Use cart routes
 app.use('/api/auth', userRoutes); // use user routes
 app.use('/api/products', productRoutes); // use product routes
-
+app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100 }));
 
 
 app.get('/test-db', async (req, res) => {
@@ -38,6 +39,6 @@ res.send("The server is running")
 
 
 app.listen(port, ()=>{
-console.log(`Serve is running on port: http://localhost:${port}`)
+console.log(`Server is running on port: http://localhost:${port}`)
 })
 
