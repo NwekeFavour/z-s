@@ -1,6 +1,5 @@
-const jwt = require("jsonwebtoken")
-const User = require('../models/user');
-
+const jwt = require('jsonwebtoken');
+const db = require('../db'); // your PostgreSQL db connection
 
 exports.protect = async (req, res, next) => {
   let token;
@@ -17,16 +16,23 @@ exports.protect = async (req, res, next) => {
       // Verify token
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-      // Get user from token, exclude password
-      req.user = await User.findById(decoded.id).select('-password');
+      // Fetch user from PostgreSQL, exclude password
+      const query = 'SELECT id, name, email, is_admin FROM users WHERE id = $1';
+      const { rows } = await db.query(query, [decoded.id]);
+
+      if (rows.length === 0) {
+        return res.status(401).json({ message: 'Not authorized, user not found' });
+      }
+
+      req.user = rows[0]; // attach user info to req
       next();
     } catch (error) {
       console.error('Token verification failed:', error);
-      res.status(401).json({ message: 'Not authorized, token failed' });
+      return res.status(401).json({ message: 'Not authorized, token failed' });
     }
   }
 
-
+  // If no token was provided
   if (!token) {
     return res.status(401).json({ message: 'Not authorized, no token' });
   }

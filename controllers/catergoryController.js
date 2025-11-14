@@ -1,14 +1,14 @@
-const Category = require('../models/category');
-const Product = require('../models/products'); // Assuming you have a Product model
+const db = require('../db');
 
 // @desc    Get all categories
 // @route   GET /api/categories
 // @access  Public
 const getAllCategories = async (req, res) => {
   try {
-    const categories = await Category.find();
-    res.status(200).json(categories);
+    const { rows } = await db.query('SELECT * FROM categories ORDER BY name');
+    res.status(200).json(rows);
   } catch (error) {
+    console.error(error);
     res.status(500).json({ message: 'Server error, unable to fetch categories' });
   }
 };
@@ -18,14 +18,23 @@ const getAllCategories = async (req, res) => {
 // @access  Public
 const getProductsByCategory = async (req, res) => {
   try {
-    const category = await Category.findById(req.params.id);
-    if (!category) {
+    const categoryId = req.params.id;
+
+    // Check if category exists
+    const categoryRes = await db.query('SELECT * FROM categories WHERE id = $1', [categoryId]);
+    if (categoryRes.rows.length === 0) {
       return res.status(404).json({ message: 'Category not found' });
     }
 
-    const products = await Product.find({ category: req.params.id }); // Assuming 'category' field in Product model
-    res.status(200).json(products);
+    // Get products in this category
+    const productsRes = await db.query(
+      'SELECT * FROM products WHERE category_id = $1 ORDER BY name',
+      [categoryId]
+    );
+
+    res.status(200).json(productsRes.rows);
   } catch (error) {
+    console.error(error);
     res.status(500).json({ message: 'Server error, unable to fetch products' });
   }
 };

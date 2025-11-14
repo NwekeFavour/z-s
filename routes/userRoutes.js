@@ -20,6 +20,10 @@ router.post('/register', registerUser);
 router.post('/login', loginUser);
 router.post('/logout', protect, logoutUser);
 
+//to check logged in user
+router.get('/me', protect, (req, res) => {
+  res.json(req.user); // req.user is set by the protect middleware
+});
 // Password Recovery
 router.post('/forgot-password', forgotPassword);
 router.post('/reset-password/:resetToken', resetPassword); // (this is for resetting after getting token)

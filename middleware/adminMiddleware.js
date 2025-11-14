@@ -1,28 +1,41 @@
 const jwt = require('jsonwebtoken');
-const User = require('../models/user'); // Assuming you have a User model with a role field
+const db = require('../db'); // your PostgreSQL db connection
 
 // Admin-only access middleware
 const adminOnly = async (req, res, next) => {
   try {
     // Get token from Authorization header
-    const token = req.headers.authorization?.split(' ')[1]; // Expect "Bearer <token>"
-    if (!token) {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ message: 'No token, authorization denied' });
     }
 
-    // Verify the token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET); // Replace with your secret key
-    req.user = decoded; // Attach decoded user info to the request object
+    const token = authHeader.split(' ')[1];
 
-    // Check if the user is an admin
-    const user = await User.findById(req.user.id); // Assuming 'id' is stored in JWT
-    if (user && user.isAdmin) {
-      return next(); // User is admin, allow the request to proceed
-    } else {
+    // Verify JWT
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded; // attach decoded payload (should contain user id)
+
+    // Fetch user from PostgreSQL
+    const query = 'SELECT * FROM users WHERE id = $1';
+    const { rows } = await db.query(query, [req.user.id]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const user = rows[0];
+
+    // Check if user is admin
+    if (!user.is_admin) {
       return res.status(403).json({ message: 'Not authorized as admin' });
     }
-  } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+
+    // All good, continue
+    next();
+  } catch (err) {
+    console.error(err);
+    res.status(401).json({ message: 'Token is invalid or expired' });
   }
 };
 
