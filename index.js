@@ -3,6 +3,7 @@ const app = express()
 const cors = require("cors")
 const dotenv = require("dotenv")
 const port =5000 || process.env.PORT
+app.set("trust proxy", 1);
 const rateLimit = require("express-rate-limit");
 dotenv.config();
      
