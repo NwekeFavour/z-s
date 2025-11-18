@@ -11,17 +11,23 @@ app.use(cors({
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
-}));
+}));  
 app.use(express.json());
 const cartRoutes = require('./routes/cartRoutes');
 const productRoutes = require("./routes/productRoutes")
 const db = require('./db');
 const userRoutes = require("./routes/userRoutes")
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10, // max 10 login attempts per 15 min
+  message: "Too many login attempts, try again later.",
+});
+
 app.use('/api/cart', cartRoutes); // Use cart routes
-app.use('/api/auth', userRoutes); // use user routes
+app.use('/api/auth', authLimiter, userRoutes); // use user routes
 app.use('/api/products', productRoutes); // use product routes
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100 }));
-
 
 app.get('/test-db', async (req, res) => {
   try {
@@ -32,7 +38,7 @@ app.get('/test-db', async (req, res) => {
     res.status(500).json({ error: 'Database connection failed' });
   }
 });
-    
+          
 app.get("/", (req,res) => {
 res.send("The server is running")
 })
