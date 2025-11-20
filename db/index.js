@@ -1,25 +1,42 @@
 require('dotenv').config();
-// db.js
 const { Pool } = require('pg');
+
+const isProduction = process.env.NODE_ENV === "production";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  // optional: max connections, idle timeout
-  ssl: {
-    rejectUnauthorized: false 
-  },
+  ssl: isProduction ? { rejectUnauthorized: false } : false,
   max: 10,
+  idleTimeoutMillis: 5000,
   connectionTimeoutMillis: 5000,
-  idleTimeoutMillis: 30000,
-  query_timeout: 10000,
-});  
-    
-pool.on('error', (err) => {
-  console.error('Unexpected pg pool error', err);
-  process.exit(-1);
+  keepAlive: true,
+  
+  keepAliveInitialDelayMillis: 10000,
 });
 
+// Log unexpected errors
+pool.on('error', (err) => {
+  console.error('Unexpected pg pool error', err);
+});
+  
+// ---------- RETRY FUNCTION HERE ----------
+async function queryWithRetry(text, params, retries = 3) {
+  try {
+    return await pool.query(text, params);
+  } catch (err) {
+    console.error("Query failed, retrying...", retries, err.message);
+
+    if (retries === 0) throw err;
+
+    // Wait before retry
+    await new Promise(res => setTimeout(res, 500));
+
+    return queryWithRetry(text, params, retries - 1);
+  }
+}
+// -----------------------------------------
+
 module.exports = {
-  query: (text, params) => pool.query(text, params),
-  getClient: () => pool.connect(), // for transactions
+  query: queryWithRetry, // use retry version everywhere
+  getClient: () => pool.connect(),
 };

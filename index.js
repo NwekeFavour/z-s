@@ -18,6 +18,8 @@ const cartRoutes = require('./routes/cartRoutes');
 const productRoutes = require("./routes/productRoutes")
 const db = require('./db');
 const userRoutes = require("./routes/userRoutes")
+const statsRoutes = require('./routes/statsRoute');
+
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -27,9 +29,10 @@ const authLimiter = rateLimit({
 
 app.use('/api/cart', cartRoutes); // Use cart routes
 app.use('/api/auth', authLimiter, userRoutes); // use user routes
+app.use('/api',  statsRoutes); // user stats routes
 app.use('/api/products', productRoutes); // use product routes
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100 }));
-
+ 
 app.get('/test-db', async (req, res) => {
   try {
     const { rows } = await db.query('SELECT NOW()'); // simple query

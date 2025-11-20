@@ -3,42 +3,56 @@ const cloudinary = require("../utils/dinary")
 // ===============================
 // Get all products (with optional filters)
 // @route   GET /api/products
+
 exports.getAllProducts = async (req, res) => {
   try {
     const { category, sort = "recent", page = 1, limit = 10 } = req.query;
 
-    let query = `SELECT * FROM products`;
-    const params = [];
-    let whereAdded = false;
+    const offset = (page - 1) * limit;
 
-    // Filter by category
+    const params = [];
+    let i = 1;
+
+    let query = `
+      SELECT 
+        p.*, 
+        COALESCE(JSON_AGG(pi.image_url) FILTER (WHERE pi.id IS NOT NULL), '[]') AS images
+      FROM products p
+      LEFT JOIN product_images pi ON p.id = pi.product_id
+      WHERE 1=1
+    `;
+
     if (category) {
-      query += ` WHERE category_id = $1`;
+      query += ` AND p.category = $${i}`;
       params.push(category);
-      whereAdded = true;
+      i++;
     }
+
+    query += ` GROUP BY p.id `;
 
     // Sorting
     if (sort === "priceLow") {
-      query += whereAdded ? ` ORDER BY price ASC` : ` ORDER BY price ASC`;
+      query += ` ORDER BY p.price ASC `;
     } else if (sort === "priceHigh") {
-      query += whereAdded ? ` ORDER BY price DESC` : ` ORDER BY price DESC`;
+      query += ` ORDER BY p.price DESC `;
     } else {
-      query += whereAdded ? ` ORDER BY created_at DESC` : ` ORDER BY created_at DESC`;
+      query += ` ORDER BY p.created_at DESC `;
     }
 
     // Pagination
-    const offset = (page - 1) * limit;
+    query += ` LIMIT $${i} OFFSET $${i + 1} `;
     params.push(limit, offset);
-    query += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
 
     const { rows } = await db.query(query, params);
+
     res.json(rows);
+
   } catch (error) {
-    console.error(error);
+    console.error("Error fetching products:", error);
     res.status(500).json({ message: "Server error" });
   }
 };
+
 
 
 // ===============================
