@@ -10,15 +10,17 @@ const {
 } = require("../controllers/productControllers")
 const { protect } = require('../middleware/authMiddleware');
 const {adminOnly} = require("../middleware/adminMiddleware");//my vscode was acting crazy on here
+const upload = require("../middleware/dinaryMiddleware");
 
 // Public routes (available for all users)
 router.get('/', getAllProducts); // List all products
-router.get('/:id', getProductById); // Get a single product by ID
 router.get('/search', searchProducts); // Search products by keyword
+router.get('/:id', getProductById); // Get a single product by ID
 
 // Admin routes (only accessible to admins)
-router.post('/', protect, adminOnly, createProduct); // Create a new product
-router.put('/:id', protect, adminOnly, updateProduct); // Update product
-router.delete('/:id', protect, adminOnly, deleteProduct); // Delete a product
+router.post('/', protect, adminOnly, upload.array("images", 10), createProduct);
+router.put('/:id', protect, adminOnly, upload.array("images", 10), updateProduct);
+router.delete('/:id', protect, adminOnly, deleteProduct);
+
 
 module.exports = router;

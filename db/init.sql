@@ -26,6 +26,7 @@ CREATE TABLE products (
   name VARCHAR(255) NOT NULL,
   description TEXT NOT NULL,
   price NUMERIC(10,2) NOT NULL CHECK (price >= 0),
+  discount_percentage SMALLINT CHECK (discount_percentage >= 0 AND discount_percentage <= 100),
   category VARCHAR(255) NOT NULL,
   brand VARCHAR(255),
   stock INTEGER NOT NULL CHECK (stock >= 0),
@@ -41,6 +42,7 @@ CREATE TABLE product_images (
   product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
   image_url TEXT NOT NULL
 );
+
 CREATE TABLE carts (
   id SERIAL PRIMARY KEY,
   user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
