@@ -1,4 +1,5 @@
 const db = require('../db');
+// would use to determine category page
 
 // @desc    Get all categories
 // @route   GET /api/categories
