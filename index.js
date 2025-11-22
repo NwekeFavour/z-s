@@ -40,9 +40,9 @@ app.get('/test-db', async (req, res) => {
   } catch (err) {
     console.error(err.message);
     res.status(500).json({ error: 'Database connection failed' });
-  }
+  }   
 });
-          
+            
 app.get("/", (req,res) => {
 res.send("The server is running")
 })

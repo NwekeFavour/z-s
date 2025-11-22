@@ -94,7 +94,3 @@ CREATE TABLE shipping_addresses (
   postal_code VARCHAR(50),
   country VARCHAR(100) NOT NULL
 );
-
-
-
--- etc. (include addresses, carts, cart_items, orders, order_items, etc.)
