@@ -11,6 +11,45 @@ exports.getUsersCount = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+exports.getCustomersCount = async (req, res) => {
+  try {
+    // 1. Get latest 10 customers with their order count
+    const customers = await db.query(`
+      SELECT 
+        u.id,
+        u.name,
+        u.created_at AS joined,
+        (
+          SELECT COUNT(*) 
+          FROM orders o 
+          WHERE o.user_id = u.id
+        ) AS orders
+      FROM users u
+      WHERE u.is_admin = false
+      ORDER BY u.created_at DESC
+      LIMIT 10
+    `);
+
+    // 2. Get total number of non-admin customers
+    const count = await db.query(`
+      SELECT COUNT(*) 
+      FROM users 
+      WHERE is_admin = false
+    `);
+
+    // 3. Send final response
+    res.json({
+      count: parseInt(count.rows[0].count, 10),
+      list: customers.rows,
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+
 
 // =========================
 // Get orders stats

@@ -19,7 +19,7 @@ const productRoutes = require("./routes/productRoutes")
 const db = require('./db');
 const userRoutes = require("./routes/userRoutes")
 const statsRoutes = require('./routes/statsRoute');
-
+const orderRoutes = require("./routes/orderRoutes")
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -31,6 +31,7 @@ app.use('/api/cart', cartRoutes); // Use cart routes
 app.use('/api/auth', authLimiter, userRoutes); // use user routes
 app.use('/api',  statsRoutes); // user stats routes
 app.use('/api/products', productRoutes); // use product routes
+app.use('/api/orders', orderRoutes);
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100 }));
  
 app.get('/test-db', async (req, res) => {
@@ -42,10 +43,10 @@ app.get('/test-db', async (req, res) => {
     res.status(500).json({ error: 'Database connection failed' });
   }   
 });
-            
+              
 app.get("/", (req,res) => {
 res.send("The server is running")
-})
+})  
 
 
 app.listen(port, ()=>{

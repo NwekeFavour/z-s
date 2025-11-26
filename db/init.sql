@@ -54,7 +54,9 @@ CREATE TABLE cart_items (
   id SERIAL PRIMARY KEY,
   cart_id INTEGER REFERENCES carts(id) ON DELETE CASCADE,
   product_id INTEGER REFERENCES products(id),
-  quantity INTEGER NOT NULL CHECK (quantity >= 1)
+  quantity INTEGER NOT NULL CHECK (quantity >= 1),
+  price NUMERIC(10,2) NOT NULL, 
+  discount_percentage SMALLINT DEFAULT 0 CHECK (discount_percentage >= 0 AND discount_percentage <= 100)
 );
 
 CREATE TABLE orders (
@@ -93,4 +95,21 @@ CREATE TABLE shipping_addresses (
   state VARCHAR(255),
   postal_code VARCHAR(50),
   country VARCHAR(100) NOT NULL
+);
+CREATE TABLE wishlists (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id, product_id) -- ensures a user cannot add the same product multiple times
+);
+
+CREATE TABLE wishlist_items (
+  id SERIAL PRIMARY KEY,
+  wishlist_id INTEGER REFERENCES wishlists(id) ON DELETE CASCADE,
+  product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
+  quantity INTEGER DEFAULT 1 CHECK (quantity >= 1),
+  note TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(wishlist_id, product_id) -- prevents duplicate items
 );

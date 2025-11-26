@@ -58,18 +58,35 @@ exports.getAllProducts = async (req, res) => {
 // ===============================
 // Get single product by ID
 // @route   GET /api/products/:id
+// controllers/productController.js
 exports.getProductById = async (req, res) => {
   try {
-    const { rows } = await db.query(
+    const productId = req.params.id;
+    // Fetch the main product
+    const { rows: productRows } = await db.query(
       `SELECT * FROM products WHERE id = $1`,
-      [req.params.id]
+      [productId]
     );
-    if (!rows.length) return res.status(404).json({ message: "Not found" });
-    res.json(rows[0]);
+    if (!productRows.length) {
+      return res.status(404).json({ message: "Product not found" });
+    }
+    const product = productRows[0];
+    // Fetch all images for this product
+    const { rows: imageRows } = await db.query(
+      `SELECT image_url FROM product_images WHERE product_id = $1`,
+      [productId]
+    );
+
+    // Attach images array to the product
+    product.images = imageRows.map((img) => img.image_url);
+
+    res.json(product);
   } catch (error) {
+    console.error(error);
     res.status(500).json({ message: error.message });
   }
 };
+
 
 // ===============================
 // Search products by keyword
@@ -255,11 +272,42 @@ exports.updateProduct = async (req, res) => {
 // @route   DELETE /api/products/:id
 exports.deleteProduct = async (req, res) => {
   try {
-    const { rows } = await db.query('DELETE FROM products WHERE id = $1 RETURNING *', [req.params.id]);
+    const productId = req.params.id;
+
+    // 1. Check if the product exists in any orders
+    const orderCheck = await db.query(
+      'SELECT 1 FROM order_items WHERE product_id = $1 LIMIT 1',
+      [productId]
+    );
+    if (orderCheck.rows.length > 0) {
+      return res.status(400).json({
+        message: 'Cannot delete product because it is included in existing orders.'
+      });
+    }
+
+    // 2. Check if the product exists in any carts
+    const cartCheck = await db.query(
+      'SELECT 1 FROM cart_items WHERE product_id = $1 LIMIT 1',
+      [productId]
+    );
+    if (cartCheck.rows.length > 0) {
+      return res.status(400).json({
+        message: 'Cannot delete product because it is currently in some users\' carts.'
+      });
+    }
+
+    // 3. Safe to delete
+    const { rows } = await db.query(
+      'DELETE FROM products WHERE id = $1 RETURNING *',
+      [productId]
+    );
+
     if (rows.length === 0) {
       return res.status(404).json({ message: 'Product not found' });
     }
-    res.json({ message: 'Product removed' });
+
+    res.json({ message: 'Product removed successfully' });
+
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: error.message });
