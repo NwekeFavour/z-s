@@ -193,9 +193,9 @@ exports.getUserProfile = async (req, res) => {
 // Update user profile
 exports.updateUserProfile = async (req, res) => {
   try {
-    const { name, email, password, isAdmin } = req.body;
+    const { name, email, password } = req.body;
 
-    // If password provided, hash it
+    // Hash password only if provided
     const hashedPassword = password ? await bcrypt.hash(password, 10) : undefined;
 
     const query = `
@@ -203,17 +203,18 @@ exports.updateUserProfile = async (req, res) => {
       SET name = COALESCE($1,name),
           email = COALESCE($2,email),
           password = COALESCE($3,password),
-          is_admin = COALESCE($4,is_admin),
           updated_at = NOW()
-      WHERE id = $5
-      RETURNING id,name,email,is_admin
+      WHERE id = $4
+      RETURNING id, name, email
     `;
-    const params = [name, email, hashedPassword, isAdmin, req.user.id];
+    const params = [name, email, hashedPassword, req.user.id];
 
     const { rows } = await db.query(query, params);
 
-    if (rows.length === 0) return res.status(404).json({ message: 'User not found' });
+    if (rows.length === 0)
+      return res.status(404).json({ message: 'User not found' });
 
+    // Return updated user (you can generate new token if you want)
     res.json({ ...rows[0], token: generateToken(rows[0].id) });
   } catch (error) {
     console.error(error);
