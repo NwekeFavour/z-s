@@ -60,7 +60,7 @@ CREATE TABLE cart_items (
 );
 
 CREATE TABLE orders (
-  id SERIAL PRIMARY KEY,
+  id VARCHAR(20) PRIMARY KEY,
   user_id INTEGER REFERENCES users(id),
   payment_method VARCHAR(100) NOT NULL,
   total_price NUMERIC(10,2) NOT NULL,
@@ -70,10 +70,12 @@ CREATE TABLE orders (
   shipped_at TIMESTAMPTZ,
   is_delivered BOOLEAN DEFAULT FALSE,
   delivered_at TIMESTAMPTZ,
-  status VARCHAR(20) DEFAULT 'processing' CHECK (status IN ('processing', 'shipped', 'delivered', 'cancelled')),
+  status VARCHAR(20) DEFAULT 'processing' 
+        CHECK (status IN ('processing', 'shipped', 'delivered', 'cancelled')),
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
 
 
 CREATE TABLE order_items (
@@ -96,6 +98,7 @@ CREATE TABLE shipping_addresses (
   postal_code VARCHAR(50),
   country VARCHAR(100) NOT NULL
 );
+
 CREATE TABLE wishlists (
   id SERIAL PRIMARY KEY,
   user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
