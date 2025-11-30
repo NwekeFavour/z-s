@@ -11,7 +11,7 @@ exports.createOrder = async (req, res) => {
 
   const total_price = items.reduce((acc, item) => acc + item.price * item.quantity, 0);
   const total_price_cents = Math.round(total_price * 100); // Stripe requires cents
-
+ 
   try {
     // Insert order with cart_items as JSONB
     const orderResult = await pool.query(
@@ -57,9 +57,6 @@ exports.createOrder = async (req, res) => {
     res.status(500).json({ message: "Failed to create order", error: err.message });
   }
 };
-
-
-
 
 // GET ALL ORDERS
 exports.getOrders = async (req, res) => {

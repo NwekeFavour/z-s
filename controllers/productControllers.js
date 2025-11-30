@@ -9,19 +9,30 @@ exports.getAllProducts = async (req, res) => {
     const { category, sort = "recent", page = 1, limit = 10 } = req.query;
 
     const offset = (page - 1) * limit;
-
     const params = [];
     let i = 1;
 
+    // Select fields explicitly and cast unlimited_stock to boolean
     let query = `
       SELECT 
-        p.*, 
+        p.id,
+        p.name,
+        p.description,
+        p.price,
+        p.discount_percentage,
+        p.category,
+        p.stock,
+        COALESCE(p.unlimited_stock, false)::boolean AS unlimited_stock,
+        p.is_featured,
+        p.created_at,
+        p.updated_at,
         COALESCE(JSON_AGG(pi.image_url) FILTER (WHERE pi.id IS NOT NULL), '[]') AS images
       FROM products p
       LEFT JOIN product_images pi ON p.id = pi.product_id
       WHERE 1=1
     `;
 
+    // Optional category filter
     if (category) {
       query += ` AND p.category = $${i}`;
       params.push(category);
@@ -52,8 +63,6 @@ exports.getAllProducts = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
-
-
 
 // ===============================
 // Get single product by ID
@@ -119,9 +128,30 @@ exports.createProduct = async (req, res) => {
       discount_percentage,
       category,
       stock,
-      brand,
+      unlimited_stock,
     } = req.body;
+
     let is_featured = req.body.is_featured === 'true';
+    const unlimited = unlimited_stock === "true" || unlimited_stock === true;
+
+    // Validate max image count
+    if (req.files && req.files.length > 5) {
+      return res.status(400).json({
+        message: "You cannot upload more than 5 images.",
+      });
+    }
+
+    // Validate each image size ≤ 5MB
+    if (req.files) {
+      for (const file of req.files) {
+        if (file.size > 5 * 1024 * 1024) {
+          return res.status(400).json({
+            message: "Each image must be less than 5MB.",
+          });
+        }
+      }
+    }
+
     // Upload images to Cloudinary
     let imageUrls = [];
     if (req.files && req.files.length > 0) {
@@ -141,10 +171,13 @@ exports.createProduct = async (req, res) => {
       }
     }
 
+    // Determine final stock value
+    const finalStock = unlimited ? null : stock; // or 0 if you prefer
+
     // Insert main product
     const insertProduct = `
       INSERT INTO products 
-      (name, description, price, discount_percentage, category, stock, brand, is_featured,  created_at, updated_at)
+      (name, description, price, discount_percentage, category, stock, unlimited_stock, is_featured, created_at, updated_at)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
       RETURNING *
     `;
@@ -155,8 +188,8 @@ exports.createProduct = async (req, res) => {
       price,
       discount_percentage,
       category,
-      stock,
-      brand,
+      finalStock,
+      unlimited,
       is_featured,
     ]);
 
@@ -176,6 +209,7 @@ exports.createProduct = async (req, res) => {
       ...product,
       images: imageUrls,
     });
+
   } catch (err) {
     console.error("CREATE PRODUCT ERROR:", err);
     res.status(500).json({
@@ -183,6 +217,7 @@ exports.createProduct = async (req, res) => {
     });
   }
 };
+
 
 
 
@@ -201,8 +236,8 @@ exports.updateProduct = async (req, res) => {
       discount_percentage,
       category,
       stock,
-      brand,
-      is_featured
+      is_featured,
+      unlimited_stock
     } = req.body;
 
     const imageUrls = req.files?.length
@@ -216,14 +251,14 @@ exports.updateProduct = async (req, res) => {
         description = COALESCE($2, description),
         price = COALESCE($3, price),
         discount_percentage = COALESCE($4, discount_percentage),
-        category = COALESCE($5, category),
+        category = COALESCE($5, category), 
         stock = COALESCE($6, stock),
-        brand = COALESCE($7, brand),
         is_featured = COALESCE($8, is_featured),
+        unlimited_stock = COALESCE($9, unlimited_stock),
         updated_at = NOW()
       WHERE id = $9
       RETURNING *
-    `;
+    `;  
 
     const { rows } = await db.query(updateQuery, [
       name,
@@ -232,8 +267,8 @@ exports.updateProduct = async (req, res) => {
       discount_percentage,
       category,
       stock,
-      brand,
       is_featured,
+      unlimited_stock,
       productId
     ]);
 

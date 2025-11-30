@@ -8,7 +8,7 @@ const rateLimit = require("express-rate-limit");
 dotenv.config();
      
 app.use(cors({
-  origin: ["http://localhost:5173", "https://zmarket-three.vercel.app"], // allow all origins, or replace "*" with your frontend URL
+  origin: ["http://localhost:5173", "https://zmarket-three.vercel.app", "https://zandmarket.co.uk", "https://www.zandmarket.co.uk"], // allow all origins, or replace "*" with your frontend URL
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,

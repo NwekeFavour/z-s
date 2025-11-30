@@ -28,11 +28,11 @@ CREATE TABLE products (
   price NUMERIC(10,2) NOT NULL CHECK (price >= 0),
   discount_percentage SMALLINT CHECK (discount_percentage >= 0 AND discount_percentage <= 100),
   category VARCHAR(255) NOT NULL,
-  brand VARCHAR(255),
   stock INTEGER NOT NULL CHECK (stock >= 0),
   rating NUMERIC(3,2) DEFAULT 0,
   num_reviews INTEGER DEFAULT 0,
   is_featured BOOLEAN DEFAULT FALSE,
+  unlimited_stock BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
