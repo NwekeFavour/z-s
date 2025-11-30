@@ -19,7 +19,7 @@ const productRoutes = require("./routes/productRoutes")
 const db = require('./db');
 const userRoutes = require("./routes/userRoutes")
 const statsRoutes = require('./routes/statsRoute');
-const orderRoutes = require("./routes/orderRoutes")
+const orderRoutes = require("./routes/orderRoutes") 
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
