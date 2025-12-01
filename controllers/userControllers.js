@@ -10,64 +10,143 @@ const generateToken = (userId) => {
   return jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: '30d' });
 };
 
-// =========================
-// Register a new user
-exports.registerUser = async (req, res) => {
+
+exports.sendOTP = async (req, res) => {
   try {
-    const { name, email, password, isAdmin = false } = req.body;
+    const { name, email, password } = req.body;
 
-    // Check if user exists
-    const userExists = await db.query('SELECT * FROM users WHERE email = $1', [email]);
-    if (userExists.rows.length > 0) 
-      return res.status(400).json({ message: 'User already exists' });
+    const userExists = await db.query("SELECT id FROM users WHERE email = $1", [email]);
+    if (userExists.rows.length > 0)
+      return res.status(400).json({ message: "Email already registered" });
 
-    // Hash password
+    await db.query("DELETE FROM pending_users WHERE email = $1", [email]);
+
     const hashedPassword = await bcrypt.hash(password, 10);
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-    // Generate OTP
-    const otp = Math.floor(100000 + Math.random() * 900000); // 6-digit OTP
-
-    // Insert user with OTP (you may want to add otp and otp_expiry columns in users table)
-    const { rows } = await db.query(
-      `INSERT INTO users 
-       (name, email, password, is_admin, otp, otp_expiry, created_at, updated_at) 
-       VALUES ($1,$2,$3,$4,$5,NOW() + INTERVAL '10 minutes',NOW(),NOW()) 
-       RETURNING id,name,email,is_admin`,
-      [name, email, hashedPassword, isAdmin, otp]
+    await db.query(
+      `INSERT INTO pending_users (name, email, password, otp, otp_expiry)
+       VALUES ($1, $2, $3, $4, NOW() + INTERVAL '10 minutes')`,
+      [name, email, hashedPassword, otp]
     );
 
-    const user = rows[0];
-
-    // Send OTP email
-    const mailOptions = {
-      from: '"Your Shop" <no-reply@yourshop.com>',
+    // Send OTP via Nodemailer
+    await sendEmail({
       to: email,
-      subject: 'Verify Your Email',
+      subject: "Verify Your Email",
       html: `
-        <div style="font-family: Arial, sans-serif; color: #02498b;">
-          <h2 style="color: #02498b;">Hi ${name},</h2>
-          <p>Thank you for registering! Please use the OTP below to verify your email address:</p>
-          <h3 style="color:#02498b;">${otp}</h3>
-          <p>This OTP will expire in 10 minutes.</p>
+        <div style="font-family: Arial; color: #02498b;">
+          <h2>Hi ${name},</h2>
+          <p>Your OTP for registration is:</p>
+          <h1 style="font-size: 28px; letter-spacing: 3px;">${otp}</h1>
+          <p>This OTP expires in 10 minutes.</p>
         </div>
       `,
-    };
-
-    await transporter.sendMail(mailOptions);
-
-    res.status(201).json({
-      _id: user.id,
-      name: user.name,
-      email: user.email,
-      isAdmin: user.is_admin,
-      message: 'User registered successfully. OTP sent to email.',
     });
 
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: error.message });
+    res.json({ message: "OTP sent to email.", otp });
+  } catch (err) {
+    console.error("Nodemailer error:", err);
+    res.status(500).json({ message: "Failed to send OTP" });
   }
 };
+
+
+// =========================
+// Register a new user
+exports.verifyOTP = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    // 1️⃣ Check for OTP + Email in pending table
+    const result = await db.query(
+      "SELECT * FROM pending_users WHERE email = $1 AND otp = $2",
+      [email, otp]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(400).json({ message: "Invalid OTP" });
+    }
+
+    const pendingUser = result.rows[0];
+
+    // 2️⃣ Check expiry
+    if (new Date() > pendingUser.otp_expiry) {
+      return res.status(400).json({ message: "OTP expired" });
+    }
+
+    // 3️⃣ Make sure user does NOT already exist in real users table
+    const existingUser = await db.query(
+      "SELECT id FROM users WHERE email = $1",
+      [email]
+    );
+
+    if (existingUser.rows.length > 0) {
+      // Clean up pending user
+      await db.query("DELETE FROM pending_users WHERE email = $1", [email]);
+      return res.status(400).json({ message: "You cannot register with this email, it already exists." });
+    }
+
+    // 4️⃣ Create actual user
+    const inserted = await db.query(
+      `INSERT INTO users (name, email, password, is_admin, created_at, updated_at)
+       VALUES ($1, $2, $3, false, NOW(), NOW())
+       RETURNING id, name, email, is_admin`,
+      [pendingUser.name, pendingUser.email, pendingUser.password]
+    );
+
+    // 5️⃣ Remove it from pending table
+    await db.query("DELETE FROM pending_users WHERE email = $1", [email]);
+
+    res.status(201).json({
+      user: inserted.rows[0],
+      message: "Email verified successfully",
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Verification failed" });
+  }
+};
+
+
+
+exports.getUnreadNotifications = async (req, res) => {
+  try {
+    const { user_id } = req.params;
+
+    const result = await pool.query(
+      `SELECT *
+       FROM notifications
+       WHERE user_id = $1 AND is_read = FALSE
+       ORDER BY created_at DESC`,
+      [user_id]
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch notifications" });
+  }
+};
+
+
+exports.markNotificationsRead = async (req, res) => {
+  try {
+    const { user_id } = req.params;
+
+    await pool.query(
+      `UPDATE notifications
+       SET is_read = TRUE, updated_at = NOW()
+       WHERE user_id = $1 AND is_read = FALSE`,
+      [user_id]
+    );
+
+    res.json({ message: "Notifications marked as read" });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to update notifications" });
+  }
+};
+
 
 // =========================
 // Login user

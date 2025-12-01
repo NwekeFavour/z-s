@@ -19,7 +19,9 @@ const productRoutes = require("./routes/productRoutes")
 const db = require('./db');
 const userRoutes = require("./routes/userRoutes")
 const statsRoutes = require('./routes/statsRoute');
+const notifyRoutes = require("./routes/notifyRoutes")
 const orderRoutes = require("./routes/orderRoutes") 
+const { stripeWebhook } = require('./controllers/orderControllers')
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -32,6 +34,8 @@ app.use('/api/auth', authLimiter, userRoutes); // use user routes
 app.use('/api',  statsRoutes); // user stats routes
 app.use('/api/products', productRoutes); // use product routes
 app.use('/api/orders', orderRoutes);
+app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), stripeWebhook);
+app.use('/api/notifications', notifyRoutes)
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100 }));
  
 app.get('/test-db', async (req, res) => {
@@ -42,12 +46,14 @@ app.get('/test-db', async (req, res) => {
     console.error(err.message);
     res.status(500).json({ error: 'Database connection failed' });
   }   
-});
+});   
+
+
               
 app.get("/", (req,res) => {
 res.send("The server is running")
 })  
-
+ 
 
 app.listen(port, ()=>{
 console.log(`Server is running on port: http://localhost:${port}`)

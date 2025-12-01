@@ -1,5 +1,6 @@
 const db = require('../db');
-const cloudinary = require("../utils/dinary")
+const cloudinary = require("../utils/dinary");
+const { createNotification } = require('./notificationController');
 // ===============================
 // Get all products (with optional filters)
 // @route   GET /api/products
@@ -225,11 +226,12 @@ exports.createProduct = async (req, res) => {
 // ===============================
 // Update a product (admin only)
 // @route   PUT /api/products/:id
+
 exports.updateProduct = async (req, res) => {
   try {
     const productId = req.params.id;
 
-    const {
+    let {
       name,
       description,
       price,
@@ -240,65 +242,89 @@ exports.updateProduct = async (req, res) => {
       unlimited_stock
     } = req.body;
 
-    const imageUrls = req.files?.length
-      ? req.files.map(file => file.path).filter(Boolean)
-      : [];
+    // --- Parse numbers ---
+    price = price !== undefined ? parseFloat(price) : undefined;
+    discount_percentage = discount_percentage !== undefined ? parseInt(discount_percentage) : undefined;
+    stock = stock !== undefined && stock !== "" ? parseInt(stock) : undefined;
 
-    // Update the product details
-    const updateQuery = `
-      UPDATE products SET
-        name = COALESCE($1, name),
-        description = COALESCE($2, description),
-        price = COALESCE($3, price),
-        discount_percentage = COALESCE($4, discount_percentage),
-        category = COALESCE($5, category), 
-        stock = COALESCE($6, stock),
-        is_featured = COALESCE($8, is_featured),
-        unlimited_stock = COALESCE($9, unlimited_stock),
-        updated_at = NOW()
-      WHERE id = $9
-      RETURNING *
-    `;  
+    // --- Parse booleans ---
+    is_featured = is_featured !== undefined ? is_featured === "true" : undefined;
+    unlimited_stock = unlimited_stock !== undefined ? unlimited_stock === "true" : undefined;
 
-    const { rows } = await db.query(updateQuery, [
-      name,
-      description,
-      price,
-      discount_percentage,
-      category,
-      stock,
-      is_featured,
-      unlimited_stock,
-      productId
-    ]);
+    if (unlimited_stock) stock = null;
 
-    if (!rows.length)
-      return res.status(404).json({ message: "Product not found" });
+    // --- Dynamic query for product fields ---
+    const fields = [];
+    const values = [];
+    let idx = 1;
 
-    // If there are new images, replace old images
-    if (imageUrls.length > 0) {
-      // Delete existing images first
-      await db.query(
-        "DELETE FROM product_images WHERE product_id = $1",
-        [productId]
-      );
+    if (name !== undefined) fields.push(`name=$${idx++}`), values.push(name);
+    if (description !== undefined) fields.push(`description=$${idx++}`), values.push(description);
+    if (price !== undefined) fields.push(`price=$${idx++}`), values.push(price);
+    if (discount_percentage !== undefined) fields.push(`discount_percentage=$${idx++}`), values.push(discount_percentage);
+    if (category !== undefined) fields.push(`category=$${idx++}`), values.push(category);
+    if (stock !== undefined) fields.push(`stock=$${idx++}`), values.push(stock);
+    if (is_featured !== undefined) fields.push(`is_featured=$${idx++}`), values.push(is_featured);
+    if (unlimited_stock !== undefined) fields.push(`unlimited_stock=$${idx++}`), values.push(unlimited_stock);
 
-      // Insert new images
-      const values = imageUrls.map((_, i) => `($1, $${i + 2})`).join(", ");
-      const imageQuery = `
-        INSERT INTO product_images (product_id, image_url)
-        VALUES ${values}
-      `;
-      await db.query(imageQuery, [productId, ...imageUrls]);
+    fields.push(`updated_at=NOW()`);
+    const query = `UPDATE products SET ${fields.join(", ")} WHERE id=$${idx} RETURNING *`;
+    values.push(productId);
+
+    const { rows } = await db.query(query, values);
+    if (!rows.length) return res.status(404).json({ message: "Product not found" });
+    const updatedProduct = rows[0];
+
+    // --- Handle new images if any ---
+    if (req.files?.length > 0) {
+      const uploadedUrls = [];
+      for (const file of req.files) {
+        const url = await new Promise((resolve, reject) => {
+          const stream = cloudinary.uploader.upload_stream(
+            { folder: "products" },
+            (err, result) => err ? reject(err) : resolve(result.secure_url)
+          );
+          stream.end(file.buffer);
+        });
+        uploadedUrls.push(url);
+      }
+
+      // Insert new images into product_images (keep old ones)
+      for (const url of uploadedUrls) {
+        await db.query(
+          "INSERT INTO product_images (product_id, image_url) VALUES ($1, $2)",
+          [productId, url]
+        );
+      }
     }
 
-    res.json(rows[0]);
+  if (updatedProduct.stock !== null && updatedProduct.stock < 5) {
+    await createNotification({
+      user_id: null, // system notification
+      title: "Low Stock Alert",
+      message: `${updatedProduct.name} is running low (${updatedProduct.stock} left).`,
+      type: "stock",
+      data: [updatedProduct],          // pass product info so frontend can show it
+      triggeredBy: "System",         // match frontend expectation
+    });
+  }
 
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: error.message });
+
+    // --- Fetch all images (old + new) ---
+    const { rows: imageRows } = await db.query(
+      "SELECT image_url FROM product_images WHERE product_id=$1 ORDER BY id ASC",
+      [productId]
+    );
+    updatedProduct.images = imageRows.map(r => r.image_url);
+
+    res.json(updatedProduct);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: err.message });
   }
 };
+
 
 
 

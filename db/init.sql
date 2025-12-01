@@ -116,3 +116,19 @@ CREATE TABLE wishlist_items (
   created_at TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(wishlist_id, product_id) -- prevents duplicate items
 );
+
+CREATE TABLE notifications (
+  id SERIAL PRIMARY KEY,
+  user_id INT,
+  title TEXT,
+  message TEXT,
+  type VARCHAR(50),
+  data JSONB,
+  triggered_by TEXT,
+  read BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NO                   -- timestamp of last update
+);
+
+-- Optional: index for faster retrieval of unread notifications
+CREATE INDEX idx_notifications_user_read 
+ON notifications(user_id, is_read);

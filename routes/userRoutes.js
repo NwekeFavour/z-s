@@ -11,12 +11,15 @@ const {
   getUserAddresses,
   addAddress,
   updateAddress,
-  deleteAddress  
+  deleteAddress,  
+  verifyOTP,
+  sendOTP
 } = require('../controllers/userControllers');
 const { protect } = require('../middleware/authMiddleware');
 
 // Registration and Authentication
-router.post('/register', registerUser);
+router.post('/register', verifyOTP);
+router.post("/register/send-otp", sendOTP);
 router.post('/login', loginUser);
 router.post('/logout', protect, logoutUser);
 

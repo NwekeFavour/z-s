@@ -1,24 +1,26 @@
-const nodemailer = require('nodemailer');
+const nodemailer = require("nodemailer");
 
-const sendEmail = async (options) => {
-  // Create a transporter (basically your email service)
-  const transporter = nodemailer.createTransport({
-    service: process.env.EMAIL_SERVICE, // e.g., 'Gmail'
-    auth: {
-      user: process.env.EMAIL_USER,     // your email address
-      pass: process.env.EMAIL_PASS      // your email password or app password
-    }
-  });
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST,       // e.g., smtp.hostinger.com
+  port: process.env.SMTP_PORT,       // 465 or 587
+  secure: process.env.SMTP_SECURE === "true", // true for 465, false for 587
+  auth: {
+    user: process.env.SMTP_USER,     // foodstuffs@zandmarket.co.uk
+    pass: process.env.SMTP_PASS,     // your email password
+  },
+  tls: {
+    rejectUnauthorized: false, // <<< allow self-signed certificates
+  },
+});
 
-  // Define the email options
+const sendEmail = async ({ to, subject, html }) => {
   const mailOptions = {
-    from: `YourApp Support <${process.env.EMAIL_USER}>`,
-    to: options.email,
-    subject: options.subject,
-    text: options.message
+    from: `"ZandMarket" <${process.env.SMTP_USER}>`,
+    to,
+    subject,
+    html,
   };
 
-  // Actually send the email
   await transporter.sendMail(mailOptions);
 };
 

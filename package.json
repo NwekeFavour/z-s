@@ -12,6 +12,7 @@
   "license": "ISC",
   "description": "This is the backend API for an e-commerce platform. It handles user authentication, product listings, cart management, and order processing. Built with RESTful principles, it supports both user and admin functionalities.",
   "dependencies": {
+    "@sendgrid/mail": "^8.1.6",
     "bcryptjs": "^3.0.2",
     "cloudinary": "^1.41.3",
     "cors": "^2.8.5",
