@@ -29,7 +29,7 @@ router.get('/me', protect, (req, res) => {
 });
 // Password Recovery
 router.post('/forgot-password', forgotPassword);
-router.post('/reset-password/:resetToken', resetPassword); // (this is for resetting after getting token)
+router.put('/reset-password/:token', resetPassword); // (this is for resetting after getting token)
 
 // Profile
 router.get('/profile', protect, getUserProfile);

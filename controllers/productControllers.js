@@ -58,6 +58,19 @@ exports.getAllProducts = async (req, res) => {
     const { rows } = await db.query(query, params);
 
     res.json(rows);
+    // console.log("Products fetched:", rows);
+    for (const product of rows) {
+      if (product.stock !== null && product.stock < 5 && !product.unlimited_stock) {
+        await createNotification({
+          user_id: null,
+          title: "Low Stock Alert",
+          message: `${product.name} is running low (${product.stock} left).`,
+          type: "stock",
+          data: product,    // pass only the product, not array
+          triggeredBy: "System",
+        });
+      }
+    }
 
   } catch (error) {
     console.error("Error fetching products:", error);
@@ -297,18 +310,6 @@ exports.updateProduct = async (req, res) => {
         );
       }
     }
-
-  if (updatedProduct.stock !== null && updatedProduct.stock < 5) {
-    await createNotification({
-      user_id: null, // system notification
-      title: "Low Stock Alert",
-      message: `${updatedProduct.name} is running low (${updatedProduct.stock} left).`,
-      type: "stock",
-      data: [updatedProduct],          // pass product info so frontend can show it
-      triggeredBy: "System",         // match frontend expectation
-    });
-  }
-
 
     // --- Fetch all images (old + new) ---
     const { rows: imageRows } = await db.query(

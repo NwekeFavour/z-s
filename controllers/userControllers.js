@@ -194,49 +194,47 @@ exports.forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
 
-    // Find user
-    const { rows } = await db.query('SELECT * FROM users WHERE email = $1', [email]);
-    if (rows.length === 0) return res.status(404).json({ message: 'User not found' });
+    const { rows } = await db.query(
+      'SELECT * FROM users WHERE email = $1',
+      [email]
+    );
+
+    if (rows.length === 0)
+      return res.status(404).json({ message: 'User not found' });
 
     const user = rows[0];
 
-    // Generate reset token
-    const resetToken = crypto.randomBytes(20).toString('hex');
-    const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex');
-    const expire = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    const resetToken = crypto.randomBytes(32).toString("hex");
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(resetToken)
+      .digest("hex");
 
-    // Save token and expiry in DB
+    const expire = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
+
     await db.query(
-      'UPDATE users SET reset_password_token = $1, reset_password_expire = $2 WHERE id = $3',
+      'UPDATE users SET reset_password_token=$1, reset_password_expire=$2 WHERE id=$3',
       [hashedToken, expire, user.id]
     );
 
-    // Construct reset URL
-    const resetUrl = `${req.protocol}://${req.get('host')}/api/users/reset-password/${resetToken}`;
-    const message = `You requested a password reset. PUT request to: \n\n ${resetUrl} \nIf you did not request this, ignore this email.`;
+    // FRONTEND URL (THIS IS THE FIX)
+    const resetUrl = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
 
-    // Send email
-    try {
-      await sendEmail({
-        email: user.email,
-        subject: 'Password Reset Request',
-        message
-      });
+    const message = `You requested a password reset.\n\nClick below:\n${resetUrl}\n\nIf you did not request this, ignore this email.`;
 
-      res.status(200).json({ message: 'Reset link sent to email' });
-    } catch (err) {
-      // On failure, clear token
-      await db.query(
-        'UPDATE users SET reset_password_token = NULL, reset_password_expire = NULL WHERE id = $1',
-        [user.id]
-      );
-      return res.status(500).json({ message: 'Email could not be sent' });
-    }
+    await sendEmail({
+      to: user.email,
+      subject: 'Password Reset Request',
+      html: message,
+    });
+
+    res.status(200).json({ message: 'Reset link sent to email' });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: error.message });
   }
 };
+
 
 // =========================
 // Reset password
@@ -244,30 +242,29 @@ exports.forgotPassword = async (req, res) => {
 // @access  Public
 exports.resetPassword = async (req, res) => {
   try {
-    const { resetToken } = req.params;
+    const { token } = req.params;   // <--- changed from resetToken
     const { password } = req.body;
 
     if (!password) return res.status(400).json({ message: 'Password is required' });
 
-    // Hash token
-    const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+    const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
 
-    // Find user with matching token and not expired
     const { rows } = await db.query(
       'SELECT * FROM users WHERE reset_password_token = $1 AND reset_password_expire > NOW()',
       [hashedToken]
     );
 
-    if (rows.length === 0) return res.status(400).json({ message: 'Invalid or expired token' });
+    if (rows.length === 0)
+      return res.status(400).json({ message: 'Invalid or expired token' });
 
     const user = rows[0];
 
-    // Hash new password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Update password and clear reset token
     await db.query(
-      'UPDATE users SET password = $1, reset_password_token = NULL, reset_password_expire = NULL, updated_at = NOW() WHERE id = $2',
+      `UPDATE users 
+       SET password = $1, reset_password_token = NULL, reset_password_expire = NULL, updated_at = NOW()
+       WHERE id = $2`,
       [hashedPassword, user.id]
     );
 
