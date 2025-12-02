@@ -172,7 +172,7 @@ exports.createProduct = async (req, res) => {
       for (const file of req.files) {
         const url = await new Promise((resolve, reject) => {
           const stream = cloudinary.uploader.upload_stream(
-            { folder: "products" },
+            { folder: "zandmarket-products" },
             (err, result) => {
               if (err) return reject(err);
               resolve(result.secure_url);
