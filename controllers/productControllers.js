@@ -59,19 +59,19 @@ exports.getAllProducts = async (req, res) => {
 
     res.json(rows);
     // console.log("Products fetched:", rows);
-    for (const product of rows) {
-      if (product.stock !== null && product.stock < 5 && !product.unlimited_stock) {
+   for (const product of rows) {
+      if (!product.unlimited_stock && product.stock < 5) {
+        // createNotification already checks for duplicates internally
         await createNotification({
           user_id: null,
           title: "Low Stock Alert",
           message: `${product.name} is running low (${product.stock} left).`,
           type: "stock",
-          data: product,    // pass only the product, not array
+          data: { id: product.id, name: product.name, stock: product.stock },
           triggeredBy: "System",
         });
       }
     }
-
   } catch (error) {
     console.error("Error fetching products:", error);
     res.status(500).json({ message: "Server error" });
@@ -172,7 +172,7 @@ exports.createProduct = async (req, res) => {
       for (const file of req.files) {
         const url = await new Promise((resolve, reject) => {
           const stream = cloudinary.uploader.upload_stream(
-            { folder: "products" },
+            { folder: "zandmark-products" },
             (err, result) => {
               if (err) return reject(err);
               resolve(result.secure_url);
@@ -180,7 +180,6 @@ exports.createProduct = async (req, res) => {
           );
           stream.end(file.buffer);
         });
-
         imageUrls.push(url);
       }
     }
@@ -294,7 +293,7 @@ exports.updateProduct = async (req, res) => {
       for (const file of req.files) {
         const url = await new Promise((resolve, reject) => {
           const stream = cloudinary.uploader.upload_stream(
-            { folder: "products" },
+            { folder: "zandmarket-products" },
             (err, result) => err ? reject(err) : resolve(result.secure_url)
           );
           stream.end(file.buffer);

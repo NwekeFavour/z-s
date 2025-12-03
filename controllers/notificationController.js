@@ -6,19 +6,54 @@ const db = require('../db');
 // notificationsController.js
 exports.createNotification = async ({ user_id, title, message, type, data, triggeredBy }) => {
   try {
+    // Skip if stock type and stock >= 5
+    if (type === "stock" && data?.stock >= 5) {
+      return null; // no notification needed
+    }
+
+    const jsonData = JSON.stringify(data || {});
+
+    // Prevent duplicate for stock
+    if (type === "stock") {
+      const productId = data?.id;
+      const existing = await db.query(
+        `SELECT id FROM notifications
+         WHERE type = 'stock' AND data->>'id' = $1 AND read = false
+         LIMIT 1`,
+        [String(productId)]
+      );
+      if (existing.rows.length > 0) return existing.rows[0];
+    }
+
+    // Prevent duplicate for order
+    if (type === "order") {
+      const orderId = data?.id;
+      const existing = await db.query(
+        `SELECT id FROM notifications
+         WHERE type = 'order' AND data->>'id' = $1 AND read = false
+         LIMIT 1`,
+        [String(orderId)]
+      );
+      if (existing.rows.length > 0) return existing.rows[0];
+    }
+
     const { rows } = await db.query(
       `INSERT INTO notifications 
        (user_id, title, message, type, data, triggered_by, read, created_at) 
        VALUES ($1,$2,$3,$4,$5,$6,false,NOW()) 
        RETURNING *`,
-      [user_id, title, message, type, JSON.stringify(data || {}), triggeredBy || "System"]
+      [user_id, title, message, type, jsonData, triggeredBy || "System"]
     );
+
     return rows[0];
+
   } catch (err) {
     console.error("Error creating notification:", err.message);
     throw err;
   }
 };
+
+
 
 
 // ------------------------------------------------------

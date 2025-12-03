@@ -14,7 +14,7 @@ router.get("/", getNotifications);
 router.put("/:id/read", markNotificationRead);
 
 // Mark all read
-router.put("/mark-all/read", markAllNotificationsRead);
+router.put("/mark-all", markAllNotificationsRead);
 
 // Delete
 router.delete("/:id", deleteNotification);

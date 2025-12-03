@@ -2,8 +2,8 @@
 const pool = require('../db');
 const Stripe = require("stripe");
 const { createNotification } = require('./notificationController');
+const crypto = require("crypto");
 const sendEmail = require('../utils/sendEmail');
-const crypto = require("crypto")
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
@@ -16,21 +16,21 @@ exports.createOrder = async (req, res) => {
     return res.status(400).json({ message: "No order items" });
   }
 
-  const client = await pool.getClient();
-
   try {
-    await client.query("BEGIN");
-
-    // 1️⃣ Check stock
+    // 1️⃣ Check stock safely
     for (const item of items) {
-      const stockRes = await client.query(
-        `SELECT stock, name FROM products WHERE id = $1 FOR UPDATE`,
+      const stockRes = await pool.query(
+        `SELECT stock, name FROM products WHERE id = $1`,
         [item.product_id]
       );
-      if (stockRes.rows.length === 0)
-        throw new Error(`Product not found: ${item.name}`);
-      if (stockRes.rows[0].stock < item.quantity)
-        throw new Error(`Insufficient stock for ${stockRes.rows[0].name}`);
+      if (!stockRes.rows.length) {
+        return res.status(404).json({ message: `Product not found: ${item.name}` });
+      }
+      if (stockRes.rows[0].stock < item.quantity) {
+        return res.status(400).json({
+          message: `Insufficient stock for ${stockRes.rows[0].name}. Available: ${stockRes.rows[0].stock}`
+        });
+      }
     }
 
     // 2️⃣ Calculate total
@@ -45,21 +45,17 @@ exports.createOrder = async (req, res) => {
       metadata: {
         user_id: user_id.toString(),
         items: JSON.stringify(items),
-        shipping_address: shipping_address || ''
+        shipping_address: shipping_address || ""
       },
     });
 
-    await client.query("COMMIT");
-
     res.status(200).json({ client_secret: paymentIntent.client_secret });
   } catch (err) {
-    await client.query("ROLLBACK");
     console.error("Create Order Error:", err);
-    res.status(400).json({ message: err.message || "Failed to create order" });
-  } finally {
-    client.release();
+    res.status(500).json({ message: err.message || "Failed to create order" });
   }
 };
+
 
 // Stripe webhook - called by Stripe, NOT frontend
 exports.stripeWebhook = async (req, res) => {
@@ -68,7 +64,7 @@ exports.stripeWebhook = async (req, res) => {
   try {
     const sig = req.headers["stripe-signature"];
     event = stripe.webhooks.constructEvent(
-      req.rawBody,
+      req.body,
       sig,
       process.env.STRIPE_WEBHOOK_SECRET
     );
@@ -79,9 +75,16 @@ exports.stripeWebhook = async (req, res) => {
 
   if (event.type === "payment_intent.succeeded") {
     const paymentIntent = event.data.object;
+
     const user_id = paymentIntent.metadata.user_id;
     const items = JSON.parse(paymentIntent.metadata.items);
     const shipping_address = paymentIntent.metadata.shipping_address;
+
+    // FIX 1: calculate total price
+    const total_price = items.reduce(
+      (acc, i) => acc + (i.price * i.quantity),
+      0
+    );
 
     const client = await pool.getClient();
 
@@ -93,12 +96,12 @@ exports.stripeWebhook = async (req, res) => {
         `INSERT INTO orders (user_id, payment_method, total_price, is_paid, paid_at, cart_items, shipping_address)
          VALUES ($1, 'stripe', $2, true, NOW(), $3, $4)
          RETURNING *`,
-        [user_id, paymentIntent.amount / 100, JSON.stringify(items), shipping_address]
+        [user_id, total_price, JSON.stringify(items), shipping_address]
       );
 
       const order = orderResult.rows[0];
 
-      // 2️⃣ Insert order_items and reduce stock
+      // 2️⃣ Insert order_items + reduce stock
       for (const item of items) {
         await client.query(
           `INSERT INTO order_items (order_id, product_id, name, price, quantity, image)
@@ -107,57 +110,123 @@ exports.stripeWebhook = async (req, res) => {
         );
 
         await client.query(
-          `UPDATE products
-           SET stock = stock - $1
-           WHERE id = $2 AND stock >= $1`,
+          `UPDATE products SET stock = stock - $1 WHERE id = $2 AND stock >= $1`,
           [item.quantity, item.product_id]
         );
       }
 
-      // 3️⃣ Send confirmation email
-      const userRes = await client.query(`SELECT name, email FROM users WHERE id = $1`, [user_id]);
-      const user = userRes.rows[0];
-
-      const itemsHtml = items.map(i => `<li>${i.name} x ${i.quantity} - £${Number(i.price).toFixed(2)}</li>`).join("");
-      // Generate unique token for delivery confirmation
+      // 3️⃣ Delivery token
       const deliveryToken = crypto.randomBytes(32).toString("hex");
-
-      // Save it with the order
       await client.query(
         `UPDATE orders SET delivery_token = $1 WHERE id = $2`,
         [deliveryToken, order.id]
       );
 
-      // Construct email link
-      const deliveryLink = `${process.env.FRONTEND_URL}/order/${order.id}/confirm-delivery?token=${deliveryToken}`;
+      // 4️⃣ Email confirmation
+      const userRes = await client.query(
+        `SELECT name, email FROM users WHERE id = $1`,
+        [user_id]
+      );
+      const user = userRes.rows[0];
 
-      const emailHtml = `
-        <h2>Hi ${user.name},</h2>
-        <p>Thank you for your order #${order.id}!</p>
-        <p><strong>Shipping Address:</strong> ${shipping_address || 'N/A'}</p>
-        <p><strong>Order Items:</strong></p>
-        <ul>${itemsHtml}</ul>
-        <p><strong>Total:</strong> £${Number(order.total_price).toFixed(2)}</p>
-        <p>Once you receive your items, please click the link below to confirm delivery:</p>
-        <p><a href="${deliveryLink}" target="_blank" style="background:#02498b;color:white;padding:10px 15px;text-decoration:none;border-radius:5px;">Confirm Delivery</a></p>
+      const htmlContent = `
+        <div style="font-family: Arial, sans-serif; background: #f7f7f7; padding: 20px; color: #333;">
+          <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
+            
+            <!-- Header -->
+            <div style="background: #02498b; padding: 25px; text-align: center; color: #fff;">
+              <h1 style="margin: 0; font-size: 24px;">ZandMarket</h1>
+              <p style="margin: 5px 0 0; opacity: 0.9;">Order Confirmation</p>
+            </div>
+
+            <!-- Body -->
+            <div style="padding: 25px;">
+              <p style="font-size: 15px;">Hi <strong>${user.name}</strong>,</p>
+              <p style="font-size: 15px;">Thank you for your order! Your order number is <strong>#${order.id}</strong>.</p>
+              
+              <p style="margin-top: 15px; font-size: 15px;">
+                <strong>Shipping Address:</strong><br>
+                ${shipping_address || "N/A"}
+              </p>
+
+              <!-- Order Items -->
+              <h3 style="margin-top: 25px; font-size: 17px;">Order Summary</h3>
+              <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+                <thead>
+                  <tr>
+                    <th style="text-align: left; padding: 10px; background: #f0f0f0;">Item</th>
+                    <th style="text-align: center; padding: 10px; background: #f0f0f0;">Qty</th>
+                    <th style="text-align: right; padding: 10px; background: #f0f0f0;">Price</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${items
+                    .map(
+                      (i) => `
+                      <tr>
+                        <td style="padding: 10px; border-bottom: 1px solid #eee;">${i.name}</td>
+                        <td style="padding: 10px; text-align: center; border-bottom: 1px solid #eee;">${i.quantity}</td>
+                        <td style="padding: 10px; text-align: right; border-bottom: 1px solid #eee;">£${Number(i.price).toFixed(2)}</td>
+                      </tr>
+                    `
+                    )
+                    .join("")}
+                </tbody>
+              </table>
+
+              <!-- Total -->
+              <p style="font-size: 17px; margin-top: 15px;">
+                <strong>Total Paid:</strong> £${total_price.toFixed(2)}
+              </p>
+
+              <!-- CTA -->
+              <div style="margin-top: 30px; text-align: center;">
+                <a href="https://zandmarket.co.uk/products"
+                  style="background: #02498b; color: #fff; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-size: 15px;">
+                  Shop More Products
+                </a>
+              </div>
+
+              <!-- Footer -->
+              <p style="font-size: 13px; color: #666; margin-top: 25px; text-align: center;">
+                Thank you for shopping with ZandMarket!<br>
+                If you have questions, reply to this email anytime.
+              </p>
+            </div>
+          </div>
+        </div>
       `;
 
       await sendEmail({
         to: user.email,
-        subject: `Order Confirmation #${order.id}`,
-        html: emailHtml
+        subject: `Your ZandMarket Order Confirmation #${order.id}`,
+        html: htmlContent,
       });
 
+
+      // 5️⃣ Create admin notification
       await createNotification({
-        user_id: null, 
-        user_triggered_id: order.user_id,
+        user_id: null,
         title: "New Order Received",
         message: `A new order #${order.id} was placed.`,
-        type: "order"
+        type: "order",
+        data: [
+          {
+            id: order.id,
+            customer_name: user.name,
+            items: items.map(i => ({
+              product_id: i.product_id,
+              name: i.name,
+              price: i.price,
+              quantity: i.quantity
+            }))
+          }
+        ],
+        triggeredBy: "System",
       });
 
       await client.query("COMMIT");
-      console.log(`Order ${order.id} processed successfully`);
+
       return res.status(200).send("Order processed");
     } catch (err) {
       await client.query("ROLLBACK");
@@ -170,6 +239,7 @@ exports.stripeWebhook = async (req, res) => {
 
   res.json({ received: true });
 };
+
 
 
 // ordersController.js
@@ -247,7 +317,11 @@ exports.getOrders = async (req, res) => {
             quantity: i.quantity,
             image: i.image
           }))
-        : (order.cart_items ? JSON.parse(order.cart_items) : []);
+        : (order.cart_items
+            ? (typeof order.cart_items === "string"
+                ? JSON.parse(order.cart_items)
+                : order.cart_items)  // already an object, use as-is
+            : []);
 
       return {
         ...order,
@@ -269,11 +343,19 @@ exports.getOrders = async (req, res) => {
 // GET ORDER BY ID (with items)
 exports.getOrderById = async (req, res) => {
   const { id } = req.params;
-  try {
-    const orderResult = await pool.query('SELECT * FROM orders WHERE id = $1', [id]);
-    const order = orderResult.rows[0];
-    if (!order) return res.status(404).json({ message: "Order not found" });
+  const user_id = req.user.id; // Make sure your auth middleware sets this
 
+  try {
+    // Fetch the order only if it belongs to the logged-in user
+    const orderResult = await pool.query(
+      'SELECT * FROM orders WHERE id = $1 AND user_id = $2',
+      [id, user_id]
+    );
+
+    const order = orderResult.rows[0];
+    if (!order) return res.status(404).json({ message: "Order not found or not yours" });
+
+    // Fetch items for this order
     const itemsResult = await pool.query('SELECT * FROM order_items WHERE order_id = $1', [id]);
     order.items = itemsResult.rows;
 
@@ -284,29 +366,138 @@ exports.getOrderById = async (req, res) => {
   }
 };
 
+
 // UPDATE ORDER STATUS
 exports.updateOrderStatus = async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
 
-  const validStatus = ['processing', 'shipped', 'delivered', 'cancelled'];
-  if (!validStatus.includes(status)) return res.status(400).json({ message: "Invalid status" });
+  const validStatus = ["processing", "shipped", "delivered", "cancelled"];
+  if (!validStatus.includes(status)) {
+    return res.status(400).json({ message: "Invalid status" });
+  }
 
   try {
-    const result = await pool.query(
-      `UPDATE orders
-       SET status = $1, updated_at = NOW()
-       WHERE id = $2 RETURNING *`,
-      [status, id]
-    );
-    if (result.rowCount === 0) return res.status(404).json({ message: "Order not found" });
+    // Decide flags based on status
+    let is_shipped = false;
+    let is_delivered = false;
 
-    res.json(result.rows[0]);
+    if (status === "shipped") is_shipped = true;
+    if (status === "delivered") is_delivered = true;
+
+    const query = `
+      UPDATE orders
+      SET status = $1,
+          is_shipped = $2,
+          is_delivered = $3,
+          updated_at = NOW()
+      WHERE id = $4
+      RETURNING *
+    `;
+    const result = await pool.query(query, [status, is_shipped, is_delivered, id]);
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    const order = result.rows[0];
+
+    // Fetch user info
+    const userRes = await pool.query(
+      "SELECT name, email FROM users WHERE id = $1",
+      [order.user_id]
+    );
+    const user = userRes.rows[0];
+
+    const frontendURL = process.env.FRONTEND_URL || "https://zandmarket.co.uk";
+    const trackURL = `${frontendURL}/orders/${id}`;
+    const receivedURL = `${frontendURL}/orders/${id}/mark-received`;
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; background: #f7f7f7; padding: 20px; color: #333;">
+        <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
+          <div style="background: #02498b; padding: 25px; text-align: center; color: #fff;">
+            <h1 style="margin: 0; font-size: 24px;">ZandMarket</h1>
+            <p style="margin: 5px 0 0; opacity: 0.9;">Order Status Updated</p>
+          </div>
+
+          <div style="padding: 25px;">
+            <p style="font-size: 15px;">Hi <strong>${user.name}</strong>,</p>
+            <p>Your order <strong>#${id}</strong> has been updated to:</p>
+            <p style="font-size: 18px; font-weight: bold; text-transform: capitalize;">
+              ${status}
+            </p>
+
+            <div style="margin-top: 25px; text-align: center;">
+              <a href="${trackURL}"
+                style="background: #02498b; color: #fff; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-size: 15px;">
+                Track Your Order
+              </a>
+            </div>
+
+            ${status === "shipped" ? `
+              <div style="margin-top: 15px; text-align: center;">
+                <a href="${receivedURL}"
+                  style="background: #28a745; color: #fff; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-size: 15px;">
+                  Mark as Received
+                </a>
+              </div>
+            ` : ""}
+
+            <p style="font-size: 13px; color: #666; margin-top: 25px; text-align: center;">
+              Thank you for shopping with ZandMarket.<br>
+              If you have any questions, reply to this email anytime.
+            </p>
+          </div>
+        </div>
+      </div>
+    `;
+
+    await sendEmail({
+      to: user.email,
+      subject: `Your Order #${id} is now ${status}`,
+      html,
+    });
+
+    res.json(order);
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Failed to update order" });
   }
 };
+
+
+
+
+
+
+exports.markOrderReceived = async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const result = await pool.query(
+      `UPDATE orders
+       SET is_delivered = TRUE,
+           status = 'delivered',
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to mark order as delivered" });
+  }
+};
+
+
+
 
 
 // DELETE /api/orders/:id
