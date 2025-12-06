@@ -10,16 +10,7 @@ CREATE TABLE users (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE TABLE addresses (
-  id SERIAL PRIMARY KEY,
-  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-  full_name VARCHAR(255) NOT NULL,
-  street VARCHAR(255) NOT NULL,
-  city VARCHAR(255) NOT NULL,
-  state VARCHAR(255),
-  postal_code VARCHAR(50),
-  country VARCHAR(100) NOT NULL
-);
+
 
 CREATE TABLE products (
   id SERIAL PRIMARY KEY,
@@ -60,10 +51,10 @@ CREATE TABLE cart_items (
 );
 
 CREATE TABLE orders (
-  id VARCHAR(20) PRIMARY KEY,
-  user_id INTEGER REFERENCES users(id),
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
   payment_method VARCHAR(100) NOT NULL,
-  total_price NUMERIC(10,2) NOT NULL,
+  total_amount NUMERIC(10, 2) NOT NULL,
   is_paid BOOLEAN DEFAULT FALSE,
   paid_at TIMESTAMPTZ,
   is_shipped BOOLEAN DEFAULT FALSE,
@@ -71,11 +62,21 @@ CREATE TABLE orders (
   is_delivered BOOLEAN DEFAULT FALSE,
   delivered_at TIMESTAMPTZ,
   status VARCHAR(20) DEFAULT 'processing' 
-        CHECK (status IN ('processing', 'shipped', 'delivered', 'cancelled')),
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+     CHECK (status IN ('processing', 'shipped', 'delivered', 'cancelled')),
+  payment_status VARCHAR(50) DEFAULT 'unpaid',
+  created_at TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE shipping_addresses (
+  id SERIAL PRIMARY KEY,
+  order_id INTEGER REFERENCES orders(id) ON DELETE CASCADE,
+  full_name VARCHAR(255) NOT NULL,
+  phone_number VARCHAR(50) NOT NULL,
+  address_line1 VARCHAR(255) NOT NULL,     -- e.g. "221B Baker Street"
+  city VARCHAR(255) NOT NULL,         -- e.g. "London"
+  postcode VARCHAR(20) NOT NULL,           -- e.g. "NW1 6XE"
+  country VARCHAR(100) NOT NULL DEFAULT 'United Kingdom'
+);
 
 
 CREATE TABLE order_items (
@@ -88,16 +89,18 @@ CREATE TABLE order_items (
   image TEXT
 );
 
-CREATE TABLE shipping_addresses (
+CREATE TABLE addresses (
   id SERIAL PRIMARY KEY,
-  order_id INTEGER REFERENCES orders(id) ON DELETE CASCADE,
+  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  phone_number VARCHAR(50) NOT NULL,
   full_name VARCHAR(255) NOT NULL,
-  street VARCHAR(255) NOT NULL,
-  city VARCHAR(255) NOT NULL,
-  state VARCHAR(255),
-  postal_code VARCHAR(50),
-  country VARCHAR(100) NOT NULL
+  address_line1 VARCHAR(255) NOT NULL,
+  city VARCHAR(150) NOT NULL,
+  postcode VARCHAR(20) NOT NULL,
+  country VARCHAR(100) DEFAULT 'United Kingdom'
 );
+
+
 
 CREATE TABLE wishlists (
   id SERIAL PRIMARY KEY,

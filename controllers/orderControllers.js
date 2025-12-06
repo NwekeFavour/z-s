@@ -34,12 +34,12 @@ exports.createOrder = async (req, res) => {
     }
 
     // 2️⃣ Calculate total
-    const total_price = items.reduce((acc, i) => acc + i.price * i.quantity, 0);
-    const total_price_cents = Math.round(total_price * 100);
+    const total_amount = items.reduce((acc, i) => acc + i.price * i.quantity, 0);
+    const total_amount_cents = Math.round(total_amount * 100);
 
     // 3️⃣ Create Stripe PaymentIntent
     const paymentIntent = await stripe.paymentIntents.create({
-      amount: total_price_cents,
+      amount: total_amount_cents,
       currency: "gbp",
       automatic_payment_methods: { enabled: true },
       metadata: {
@@ -80,28 +80,28 @@ exports.stripeWebhook = async (req, res) => {
     const items = JSON.parse(paymentIntent.metadata.items);
     const shipping_address = paymentIntent.metadata.shipping_address;
 
-    // FIX 1: calculate total price
-    const total_price = items.reduce(
-      (acc, i) => acc + (i.price * i.quantity),
-      0
-    );
+    const total_amount = items.reduce((acc, i) => acc + i.price * i.quantity, 0);
 
     const client = await pool.getClient();
 
     try {
       await client.query("BEGIN");
 
-      // 1️⃣ Create order
+      // Generate order_number like ORD102
+      const randomNum = Math.floor(100 + Math.random() * 900); // random 3-digit
+      const orderNumber = `ORD${randomNum}`;
+
+      // Create order
       const orderResult = await client.query(
-        `INSERT INTO orders (user_id, payment_method, total_price, is_paid, paid_at, cart_items, shipping_address)
-         VALUES ($1, 'stripe', $2, true, NOW(), $3, $4)
+        `INSERT INTO orders (user_id, payment_method, total_amount, is_paid, paid_at, cart_items, shipping_address, order_number)
+         VALUES ($1, 'stripe', $2, true, NOW(), $3, $4, $5)
          RETURNING *`,
-        [user_id, total_price, JSON.stringify(items), shipping_address]
+        [user_id, total_amount, JSON.stringify(items), shipping_address, orderNumber]
       );
 
       const order = orderResult.rows[0];
 
-      // 2️⃣ Insert order_items + reduce stock
+      // Insert order items & reduce stock
       for (const item of items) {
         await client.query(
           `INSERT INTO order_items (order_id, product_id, name, price, quantity, image)
@@ -115,14 +115,14 @@ exports.stripeWebhook = async (req, res) => {
         );
       }
 
-      // 3️⃣ Delivery token
+      // Delivery token
       const deliveryToken = crypto.randomBytes(32).toString("hex");
       await client.query(
         `UPDATE orders SET delivery_token = $1 WHERE id = $2`,
         [deliveryToken, order.id]
       );
 
-      // 4️⃣ Email confirmation
+      // Send email
       const userRes = await client.query(
         `SELECT name, email FROM users WHERE id = $1`,
         [user_id]
@@ -132,24 +132,17 @@ exports.stripeWebhook = async (req, res) => {
       const htmlContent = `
         <div style="font-family: Arial, sans-serif; background: #f7f7f7; padding: 20px; color: #333;">
           <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
-            
-            <!-- Header -->
             <div style="background: #02498b; padding: 25px; text-align: center; color: #fff;">
               <h1 style="margin: 0; font-size: 24px;">ZandMarket</h1>
               <p style="margin: 5px 0 0; opacity: 0.9;">Order Confirmation</p>
             </div>
-
-            <!-- Body -->
             <div style="padding: 25px;">
               <p style="font-size: 15px;">Hi <strong>${user.name}</strong>,</p>
-              <p style="font-size: 15px;">Thank you for your order! Your order number is <strong>#${order.id}</strong>.</p>
-              
+              <p style="font-size: 15px;">Thank you for your order! Your order number is <strong>${order.order_number}</strong>.</p>
               <p style="margin-top: 15px; font-size: 15px;">
                 <strong>Shipping Address:</strong><br>
                 ${shipping_address || "N/A"}
               </p>
-
-              <!-- Order Items -->
               <h3 style="margin-top: 25px; font-size: 17px;">Order Summary</h3>
               <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
                 <thead>
@@ -160,34 +153,23 @@ exports.stripeWebhook = async (req, res) => {
                   </tr>
                 </thead>
                 <tbody>
-                  ${items
-                    .map(
-                      (i) => `
-                      <tr>
-                        <td style="padding: 10px; border-bottom: 1px solid #eee;">${i.name}</td>
-                        <td style="padding: 10px; text-align: center; border-bottom: 1px solid #eee;">${i.quantity}</td>
-                        <td style="padding: 10px; text-align: right; border-bottom: 1px solid #eee;">£${Number(i.price).toFixed(2)}</td>
-                      </tr>
-                    `
-                    )
-                    .join("")}
+                  ${items.map(i => `
+                    <tr>
+                      <td style="padding: 10px; border-bottom: 1px solid #eee;">${i.name}</td>
+                      <td style="padding: 10px; text-align: center; border-bottom: 1px solid #eee;">${i.quantity}</td>
+                      <td style="padding: 10px; text-align: right; border-bottom: 1px solid #eee;">£${Number(i.price).toFixed(2)}</td>
+                    </tr>`).join("")}
                 </tbody>
               </table>
-
-              <!-- Total -->
               <p style="font-size: 17px; margin-top: 15px;">
-                <strong>Total Paid:</strong> £${total_price.toFixed(2)}
+                <strong>Total Paid:</strong> £${total_amount.toFixed(2)}
               </p>
-
-              <!-- CTA -->
               <div style="margin-top: 30px; text-align: center;">
                 <a href="https://zandmarket.co.uk/products"
                   style="background: #02498b; color: #fff; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-size: 15px;">
                   Shop More Products
                 </a>
               </div>
-
-              <!-- Footer -->
               <p style="font-size: 13px; color: #666; margin-top: 25px; text-align: center;">
                 Thank you for shopping with ZandMarket!<br>
                 If you have questions, reply to this email anytime.
@@ -199,16 +181,15 @@ exports.stripeWebhook = async (req, res) => {
 
       await sendEmail({
         to: user.email,
-        subject: `Your ZandMarket Order Confirmation #${order.id}`,
+        subject: `Your ZandMarket Order Confirmation ${order.order_number}`,
         html: htmlContent,
       });
 
-
-      // 5️⃣ Create admin notification
+      // Admin notification
       await createNotification({
         user_id: null,
         title: "New Order Received",
-        message: `A new order #${order.id} was placed.`,
+        message: `A new order ${order.order_number} was placed.`,
         type: "order",
         data: [
           {
@@ -423,7 +404,7 @@ exports.updateOrderStatus = async (req, res) => {
 
           <div style="padding: 25px;">
             <p style="font-size: 15px;">Hi <strong>${user.name}</strong>,</p>
-            <p>Your order <strong>#${id}</strong> has been updated to:</p>
+            <p>Your order <strong>#${order.order_number}</strong> has been updated to:</p>
             <p style="font-size: 18px; font-weight: bold; text-transform: capitalize;">
               ${status}
             </p>
@@ -455,7 +436,7 @@ exports.updateOrderStatus = async (req, res) => {
 
     await sendEmail({
       to: user.email,
-      subject: `Your Order #${id} is now ${status}`,
+      subject: `Your Order #${order.order_number} is now ${status}`,
       html,
     });
 

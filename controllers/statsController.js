@@ -13,31 +13,40 @@ exports.getUsersCount = async (req, res) => {
 };
 exports.getCustomersCount = async (req, res) => {
   try {
-    // 1. Get latest 10 customers with their order count
+    // 1️⃣ Get latest 10 customers with order info
     const customers = await db.query(`
       SELECT 
         u.id,
         u.name,
         u.created_at AS joined,
-        (
-          SELECT COUNT(*) 
-          FROM orders o 
-          WHERE o.user_id = u.id
-        ) AS orders
+        COALESCE(o.order_count, 0) AS orders,
+        COALESCE(o.total_spent, 0) AS total_spent,
+        COALESCE(o.last_order_at, NULL) AS last_order_at,
+        COALESCE(o.order_ids, ARRAY[]::INTEGER[]) AS order_ids
       FROM users u
+      LEFT JOIN (
+        SELECT 
+          user_id,
+          COUNT(*) AS order_count,
+          SUM(total_amount) AS total_spent,
+          MAX(created_at) AS last_order_at,
+          ARRAY_AGG(id ORDER BY created_at DESC) AS order_ids
+        FROM orders
+        GROUP BY user_id
+      ) o ON u.id = o.user_id
       WHERE u.is_admin = false
       ORDER BY u.created_at DESC
       LIMIT 10
     `);
 
-    // 2. Get total number of non-admin customers
+    // 2️⃣ Get total number of non-admin customers
     const count = await db.query(`
       SELECT COUNT(*) 
       FROM users 
       WHERE is_admin = false
     `);
 
-    // 3. Send final response
+    // 3️⃣ Send final response
     res.json({
       count: parseInt(count.rows[0].count, 10),
       list: customers.rows,
@@ -49,20 +58,27 @@ exports.getCustomersCount = async (req, res) => {
   }
 };
 
+
 exports.getCustomerOrderHistory = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 1️⃣ Get all orders for the customer, including cart_items
+    if (!id || isNaN(Number(id))) {
+      return res.status(400).json({ message: "Invalid user ID" });
+    }
+
+    const userId = Number(id);
+
     const orders = await db.query(`
       SELECT 
         o.id,
         o.payment_method,
-        o.total_price,
+        o.total_amount,
         o.is_paid,
         o.paid_at,
         o.is_shipped,
         o.shipped_at,
+        o.order_number,
         o.is_delivered,
         o.delivered_at,
         o.status,
@@ -71,9 +87,8 @@ exports.getCustomerOrderHistory = async (req, res) => {
       FROM orders o
       WHERE o.user_id = $1
       ORDER BY o.created_at DESC
-    `, [id]);
+    `, [userId]);
 
-    // 2️⃣ Get all order_items grouped by order_id
     const items = await db.query(`
       SELECT 
         order_id,
@@ -83,22 +98,20 @@ exports.getCustomerOrderHistory = async (req, res) => {
         quantity,
         image
       FROM order_items
-      WHERE order_id IN (
+      WHERE order_id::integer IN (
         SELECT id FROM orders WHERE user_id = $1
       )
-    `, [id]);
+    `, [userId]);
 
-    // 3️⃣ Attach items to their respective orders
     const ordersWithItems = orders.rows.map(order => ({
       ...order,
-      // Prefer actual order_items if available, otherwise fall back to cart_items snapshot
       items: items.rows.filter(item => item.order_id === order.id).length > 0
         ? items.rows.filter(item => item.order_id === order.id)
         : order.cart_items || []
     }));
 
     res.json({
-      user_id: id,
+      user_id: userId,
       total_orders: orders.rows.length,
       orders: ordersWithItems
     });
@@ -112,6 +125,7 @@ exports.getCustomerOrderHistory = async (req, res) => {
 
 
 
+
 // =========================
 // Get orders stats
 exports.getOrdersStats = async (req, res) => {
@@ -119,8 +133,8 @@ exports.getOrdersStats = async (req, res) => {
     const { rows } = await db.query(`
       SELECT
         COUNT(*) AS total_orders,
-        SUM(total_price) AS total_sales,
-        AVG(total_price) AS average_order_value,
+        SUM(total_amount) AS total_sales,
+        AVG(total_amount) AS average_order_value,
         COUNT(*) FILTER (WHERE is_paid = true) AS paid_orders,
         COUNT(*) FILTER (WHERE is_shipped = true) AS shipped_orders,
         COUNT(*) FILTER (WHERE is_delivered = true) AS delivered_orders
@@ -169,7 +183,7 @@ exports.getMonthlySales = async (req, res) => {
       SELECT 
         TO_CHAR(created_at, 'YYYY-MM') AS month,
         COUNT(*) AS orders_count,
-        SUM(total_price) AS total_sales
+        SUM(total_amount) AS total_sales
       FROM orders
       WHERE is_paid = true
       GROUP BY month

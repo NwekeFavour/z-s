@@ -32,17 +32,58 @@ exports.sendOTP = async (req, res) => {
 
     // Send OTP via Nodemailer
     await sendEmail({
+      from: `"ZandMarket ${process.env.FROM_EMAIL}"`,
       to: email,
       subject: "Verify Your Email",
       html: `
-        <div style="font-family: Arial; color: #02498b;">
-          <h2>Hi ${name},</h2>
-          <p>Your OTP for registration is:</p>
-          <h1 style="font-size: 28px; letter-spacing: 3px;">${otp}</h1>
-          <p>This OTP expires in 10 minutes.</p>
-        </div>
-      `,
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>OTP Verification</title>
+</head>
+<body style="margin:0; padding:0; font-family: Arial, sans-serif; background-color: #f5f7fa;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f5f7fa; margin:0; padding:40px 0;">
+    <tr>
+      <td align="center" valign="top">
+        <table width="420" cellpadding="0" cellspacing="0" border="0" style="background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 6px 18px rgba(0,0,0,0.08); margin:0;">
+          
+          <!-- Top Banner -->
+          <tr>
+            <td style="background-color: #02489b; text-align:center; padding: 25px 20px; color:white; font-size:22px; font-weight:bold;">
+              ZandMarket
+            </td>
+          </tr>
+
+          <!-- Greeting & OTP -->
+          <tr>
+            <td style="padding: 30px 25px; text-align:center;">
+              <h2 style="margin: 0 0 10px; color:#02489b;">Hello ${name},</h2>
+              <p style="margin:0 0 25px; font-size:16px; color:#333;">Use the following OTP to complete your registration:</p>
+              <div style="display:inline-block; background-color:#02489b; color:white; font-size:28px; font-weight:bold; padding:15px 35px; border-radius:8px; letter-spacing:3px;">
+                ${otp}
+              </div>
+              <p style="margin:25px 0 0; font-size:14px; color:#555;">This OTP is valid for 10 minutes only.</p>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background-color:#f1f3f6; text-align:center; padding:20px; font-size:12px; color:#777;">
+              © ${new Date().getFullYear()} ZandMarket. All rights reserved.
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+`
+
     });
+
 
     res.json({ message: "OTP sent to email.", otp });
   } catch (err) {
@@ -218,14 +259,64 @@ exports.forgotPassword = async (req, res) => {
     );
 
     // FRONTEND URL (THIS IS THE FIX)
-    const resetUrl = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
+    const resetUrl = `${process.env.FRONTEND_URL}/auth/reset-password/${resetToken}`;
 
-    const message = `You requested a password reset.\n\nClick below:\n${resetUrl}\n\nIf you did not request this, ignore this email.`;
+
 
     await sendEmail({
+      from: "ZandMarket foodstuffs@zandmarket.co.uk",
       to: user.email,
       subject: 'Password Reset Request',
-      html: message,
+      html: `
+      <div padding:40px 0;font-family:Arial,Helvetica,sans-serif;">
+        <div style="max-width:600px;margin:0 auto;background:#ffffff;border-radius:10px;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,0.1);">
+          
+          <div style="background:#02498b;padding:24px;text-align:center;color:white;">
+            <h1 style="margin:0;font-size:24px;font-weight:600;">Password Reset Request</h1>
+          </div>
+
+          <div style="padding:32px;">
+            <p style="font-size:16px;color:#333;">
+              Hello, you recently requested to reset your password. Click the button below to proceed:
+            </p>
+
+            <div style="text-align:center;margin:30px 0;">
+              <a href="${resetUrl}"
+                style="
+                  background:#02498b;
+                  padding:14px 26px;
+                  color:white;
+                  text-decoration:none;
+                  border-radius:8px;
+                  font-size:16px;
+                  font-weight:600;
+                  display:inline-block;
+                "
+              >
+                Reset Password
+              </a>
+            </div>
+
+            <p style="font-size:15px;color:#555;">
+              If the button above doesn't work, copy and paste this link into your browser:
+            </p>
+
+            <p style="word-break:break-all;color:#02498b;font-size:14px;margin-top:10px;">
+              ${resetUrl}
+            </p>
+
+            <p style="font-size:14px;color:#999;margin-top:30px;">
+              If you didn’t request this password reset, you can safely ignore this email.
+            </p>
+          </div>
+
+          <div style="background:#f9fafb;padding:18px;text-align:center;color:#777;font-size:13px;">
+            © ${new Date().getFullYear()} ZandMarket. All rights reserved.
+          </div>
+
+        </div>
+      </div>
+    `,
     });
 
     res.status(200).json({ message: 'Reset link sent to email' });
@@ -327,7 +418,10 @@ exports.updateUserProfile = async (req, res) => {
 // Get all addresses
 exports.getUserAddresses = async (req, res) => {
   try {
-    const { rows } = await db.query('SELECT * FROM addresses WHERE user_id = $1', [req.user.id]);
+    const { rows } = await db.query(
+      'SELECT * FROM addresses WHERE user_id = $1 ORDER BY id DESC',
+      [req.user.id]
+    );
     res.json(rows);
   } catch (error) {
     console.error(error);
@@ -336,15 +430,36 @@ exports.getUserAddresses = async (req, res) => {
 };
 
 // =========================
+// Add a new UK-style address
+// =========================
 // Add a new address
 exports.addAddress = async (req, res) => {
   try {
-    const { full_name, street, city, state, postal_code, country } = req.body;
+    const {
+      full_name,
+      address_line1,
+      city,
+      postcode,
+      country = "United Kingdom",
+      phone_number
+    } = req.body;
+
     const { rows } = await db.query(
-      `INSERT INTO addresses (user_id, full_name, street, city, state, postal_code, country)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [req.user.id, full_name, street, city, state, postal_code, country]
+      `INSERT INTO addresses 
+        (user_id, full_name, phone_number, address_line1, city, postcode, country)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING *`,
+      [
+        req.user.id,
+        full_name,
+        phone_number,
+        address_line1,
+        city,
+        postcode,
+        country
+      ]
     );
+
     res.status(201).json(rows[0]);
   } catch (error) {
     console.error(error);
@@ -352,24 +467,48 @@ exports.addAddress = async (req, res) => {
   }
 };
 
+
+// =========================
+// Update address
 // =========================
 // Update an address
 exports.updateAddress = async (req, res) => {
   try {
-    const { full_name, street, city, state, postal_code, country } = req.body;
+    const {
+      full_name,
+      address_line1,
+      city,
+      postcode,
+      country,
+      phone_number
+    } = req.body;
+
     const { rows } = await db.query(
       `UPDATE addresses
-       SET full_name = COALESCE($1,full_name),
-           street = COALESCE($2,street),
-           city = COALESCE($3,city),
-           state = COALESCE($4,state),
-           postal_code = COALESCE($5,postal_code),
-           country = COALESCE($6,country)
+       SET 
+        full_name = COALESCE($1, full_name),
+        address_line1 = COALESCE($2, address_line1),
+        city = COALESCE($3, city),
+        postcode = COALESCE($4, postcode),
+        country = COALESCE($5, country),
+        phone_number = COALESCE($6, phone_number)
        WHERE id = $7 AND user_id = $8
        RETURNING *`,
-      [full_name, street, city, state, postal_code, country, req.params.id, req.user.id]
+      [
+        full_name,
+        address_line1,
+        city,
+        postcode,
+        country,
+        phone_number,
+        req.params.id,
+        req.user.id
+      ]
     );
-    if (rows.length === 0) return res.status(404).json({ message: 'Address not found' });
+
+    if (rows.length === 0) 
+      return res.status(404).json({ message: "Address not found" });
+
     res.json(rows[0]);
   } catch (error) {
     console.error(error);
@@ -377,16 +516,20 @@ exports.updateAddress = async (req, res) => {
   }
 };
 
+
 // =========================
-// Delete an address
+// Delete address
 exports.deleteAddress = async (req, res) => {
   try {
     const { rows } = await db.query(
       'DELETE FROM addresses WHERE id = $1 AND user_id = $2 RETURNING *',
       [req.params.id, req.user.id]
     );
-    if (rows.length === 0) return res.status(404).json({ message: 'Address not found' });
-    res.json({ message: 'Address deleted' });
+
+    if (rows.length === 0)
+      return res.status(404).json({ message: "Address not found" });
+
+    res.json({ message: "Address deleted" });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: error.message });
