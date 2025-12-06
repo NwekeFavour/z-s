@@ -7,6 +7,9 @@ const sendEmail = require('../utils/sendEmail');
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
+const SHIPPING_FEE = 10; // ⚡ Shipping fee in GBP
+
+
 // Create a PaymentIntent - frontend calls THIS endpoint
 exports.createOrder = async (req, res) => {
   const user_id = req.user.id;
@@ -20,21 +23,26 @@ exports.createOrder = async (req, res) => {
     // 1️⃣ Check stock safely
     for (const item of items) {
       const stockRes = await pool.query(
-        `SELECT stock, name FROM products WHERE id = $1`,
+        `SELECT stock, name, unlimited_stock FROM products WHERE id = $1`,
         [item.product_id]
       );
+
       if (!stockRes.rows.length) {
         return res.status(404).json({ message: `Product not found: ${item.name}` });
       }
-      if (stockRes.rows[0].stock < item.quantity) {
+
+      const product = stockRes.rows[0];
+
+      if (!product.unlimited_stock && product.stock < item.quantity) {
         return res.status(400).json({
-          message: `Insufficient stock for ${stockRes.rows[0].name}. Available: ${stockRes.rows[0].stock}`
+          message: `Insufficient stock for ${product.name}. Available: ${product.stock}`
         });
       }
     }
 
-    // 2️⃣ Calculate total
-    const total_amount = items.reduce((acc, i) => acc + i.price * i.quantity, 0);
+    // 2️⃣ Calculate total including shipping
+    const itemsTotal = items.reduce((acc, i) => acc + i.price * i.quantity, 0);
+    const total_amount = itemsTotal + SHIPPING_FEE;
     const total_amount_cents = Math.round(total_amount * 100);
 
     // 3️⃣ Create Stripe PaymentIntent
@@ -45,11 +53,12 @@ exports.createOrder = async (req, res) => {
       metadata: {
         user_id: user_id.toString(),
         items: JSON.stringify(items),
-        shipping_address: shipping_address || ""
+        shipping_address: shipping_address || "",
+        shipping_fee: SHIPPING_FEE
       },
     });
 
-    res.status(200).json({ client_secret: paymentIntent.client_secret });
+    res.status(200).json({ client_secret: paymentIntent.client_secret, shipping_fee: SHIPPING_FEE });
   } catch (err) {
     console.error("Create Order Error:", err);
     res.status(500).json({ message: err.message || "Failed to create order" });
@@ -79,8 +88,10 @@ exports.stripeWebhook = async (req, res) => {
     const user_id = paymentIntent.metadata.user_id;
     const items = JSON.parse(paymentIntent.metadata.items);
     const shipping_address = paymentIntent.metadata.shipping_address;
+    const shipping_fee = parseFloat(paymentIntent.metadata.shipping_fee || 0);
 
-    const total_amount = items.reduce((acc, i) => acc + i.price * i.quantity, 0);
+    const itemsTotal = items.reduce((acc, i) => acc + i.price * i.quantity, 0);
+    const total_amount = itemsTotal + shipping_fee;
 
     const client = await pool.getClient();
 
@@ -88,15 +99,16 @@ exports.stripeWebhook = async (req, res) => {
       await client.query("BEGIN");
 
       // Generate order_number like ORD102
-      const randomNum = Math.floor(100 + Math.random() * 900); // random 3-digit
+      const randomNum = Math.floor(100 + Math.random() * 900);
       const orderNumber = `ORD${randomNum}`;
 
-      // Create order
+      // Create order including shipping fee
       const orderResult = await client.query(
-        `INSERT INTO orders (user_id, payment_method, total_amount, is_paid, paid_at, cart_items, shipping_address, order_number)
-         VALUES ($1, 'stripe', $2, true, NOW(), $3, $4, $5)
+        `INSERT INTO orders 
+          (user_id, payment_method, total_amount, is_paid, paid_at, cart_items, shipping_address, shipping_fee, order_number)
+         VALUES ($1, 'stripe', $2, true, NOW(), $3, $4, $5, $6)
          RETURNING *`,
-        [user_id, total_amount, JSON.stringify(items), shipping_address, orderNumber]
+        [user_id, total_amount, JSON.stringify(items), shipping_address, shipping_fee, orderNumber]
       );
 
       const order = orderResult.rows[0];
@@ -122,7 +134,7 @@ exports.stripeWebhook = async (req, res) => {
         [deliveryToken, order.id]
       );
 
-      // Send email
+      // Send email to user with shipping fee
       const userRes = await client.query(
         `SELECT name, email FROM users WHERE id = $1`,
         [user_id]
@@ -137,43 +149,32 @@ exports.stripeWebhook = async (req, res) => {
               <p style="margin: 5px 0 0; opacity: 0.9;">Order Confirmation</p>
             </div>
             <div style="padding: 25px;">
-              <p style="font-size: 15px;">Hi <strong>${user.name}</strong>,</p>
-              <p style="font-size: 15px;">Thank you for your order! Your order number is <strong>${order.order_number}</strong>.</p>
-              <p style="margin-top: 15px; font-size: 15px;">
-                <strong>Shipping Address:</strong><br>
-                ${shipping_address || "N/A"}
-              </p>
-              <h3 style="margin-top: 25px; font-size: 17px;">Order Summary</h3>
-              <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+              <p>Hi <strong>${user.name}</strong>,</p>
+              <p>Thank you for your order! Your order number is <strong>${order.order_number}</strong>.</p>
+              <p><strong>Shipping Address:</strong><br>${shipping_address || "N/A"}</p>
+              <h3>Order Summary</h3>
+              <table style="width:100%; border-collapse: collapse; margin-top: 10px;">
                 <thead>
                   <tr>
-                    <th style="text-align: left; padding: 10px; background: #f0f0f0;">Item</th>
-                    <th style="text-align: center; padding: 10px; background: #f0f0f0;">Qty</th>
-                    <th style="text-align: right; padding: 10px; background: #f0f0f0;">Price</th>
+                    <th style="text-align:left; padding:10px; background:#f0f0f0;">Item</th>
+                    <th style="text-align:center; padding:10px; background:#f0f0f0;">Qty</th>
+                    <th style="text-align:right; padding:10px; background:#f0f0f0;">Price</th>
                   </tr>
                 </thead>
                 <tbody>
                   ${items.map(i => `
                     <tr>
-                      <td style="padding: 10px; border-bottom: 1px solid #eee;">${i.name}</td>
-                      <td style="padding: 10px; text-align: center; border-bottom: 1px solid #eee;">${i.quantity}</td>
-                      <td style="padding: 10px; text-align: right; border-bottom: 1px solid #eee;">£${Number(i.price).toFixed(2)}</td>
+                      <td style="padding:10px; border-bottom:1px solid #eee;">${i.name}</td>
+                      <td style="padding:10px; text-align:center; border-bottom:1px solid #eee;">${i.quantity}</td>
+                      <td style="padding:10px; text-align:right; border-bottom:1px solid #eee;">£${Number(i.price).toFixed(2)}</td>
                     </tr>`).join("")}
+                  <tr>
+                    <td colspan="2" style="padding:10px; text-align:right; font-weight:bold;">Shipping Fee</td>
+                    <td style="padding:10px; text-align:right;">£${shipping_fee.toFixed(2)}</td>
+                  </tr>
                 </tbody>
               </table>
-              <p style="font-size: 17px; margin-top: 15px;">
-                <strong>Total Paid:</strong> £${total_amount.toFixed(2)}
-              </p>
-              <div style="margin-top: 30px; text-align: center;">
-                <a href="https://zandmarket.co.uk/products"
-                  style="background: #02498b; color: #fff; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-size: 15px;">
-                  Shop More Products
-                </a>
-              </div>
-              <p style="font-size: 13px; color: #666; margin-top: 25px; text-align: center;">
-                Thank you for shopping with ZandMarket!<br>
-                If you have questions, reply to this email anytime.
-              </p>
+              <p style="font-size:17px; margin-top:15px;"><strong>Total Paid:</strong> £${total_amount.toFixed(2)}</p>
             </div>
           </div>
         </div>
@@ -200,14 +201,14 @@ exports.stripeWebhook = async (req, res) => {
               name: i.name,
               price: i.price,
               quantity: i.quantity
-            }))
+            })),
+            shipping_fee
           }
         ],
         triggeredBy: "System",
       });
 
       await client.query("COMMIT");
-
       return res.status(200).send("Order processed");
     } catch (err) {
       await client.query("ROLLBACK");
