@@ -35,7 +35,7 @@ const statsRoutes = require('./routes/statsRoute');
 const notifyRoutes = require("./routes/notifyRoutes")
 const orderRoutes = require("./routes/orderRoutes") 
  
-
+  
 app.use('/api/cart', cartRoutes); // Use cart routes
 app.use('/api/auth', authLimiter, userRoutes); // use user routes
 app.use('/api',  statsRoutes); // user stats routes

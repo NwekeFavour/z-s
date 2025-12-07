@@ -393,7 +393,7 @@ exports.updateOrderStatus = async (req, res) => {
 
     const frontendURL = process.env.FRONTEND_URL || "https://zandmarket.co.uk";
     const trackURL = `${frontendURL}/orders/${id}`;
-    const receivedURL = `${frontendURL}/orders/${id}/mark-received`;
+    const receivedURL = `${frontendURL}/orders/${id}/confirm-delivery?token=${order.delivery_token}`;
 
     const html = `
       <div style="font-family: Arial, sans-serif; background: #f7f7f7; padding: 20px; color: #333;">
