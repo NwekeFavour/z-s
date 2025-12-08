@@ -13,9 +13,12 @@ const {
   updateAddress,
   deleteAddress,  
   verifyOTP,
-  sendOTP
+  sendOTP,
+  updateShippingFee,
+  getShippingFee
 } = require('../controllers/userControllers');
 const { protect } = require('../middleware/authMiddleware');
+const { adminOnly } = require('../middleware/adminMiddleware');
 
 // Registration and Authentication
 router.post('/register', verifyOTP);
@@ -34,6 +37,8 @@ router.put('/reset-password/:token', resetPassword); // (this is for resetting a
 // Profile
 router.get('/profile', protect, getUserProfile);
 router.put('/profile', protect, updateUserProfile);
+router.get("/shipping-fee", protect, getShippingFee);
+router.put("/shipping-fee/:id", protect, adminOnly, updateShippingFee);
 
 // Address Management
 router.get('/addresses', protect, getUserAddresses);

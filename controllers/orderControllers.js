@@ -7,19 +7,46 @@ const sendEmail = require('../utils/sendEmail');
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-const SHIPPING_FEE = 10; // ⚡ Shipping fee in GBP
 
+
+exports.getOrderToggle =  async (req, res) => {
+  const result = await pool.query("SELECT enabled FROM order_settings LIMIT 1");
+  res.json(result.rows[0]);
+}
+
+exports.updateOrderToggle = async (req, res) => {
+  const { enabled } = req.body || {};
+  if (enabled === undefined) {
+    return res.status(400).json({ error: "Missing 'enabled' in request body" });
+  }
+
+  try {
+    await pool.query("UPDATE order_settings SET enabled = $1", [enabled]);
+    res.json({ message: "Updated", enabled });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Database update failed" });
+  }
+};
 
 // Create a PaymentIntent - frontend calls THIS endpoint
+// ================= Create Order =================
 exports.createOrder = async (req, res) => {
   const user_id = req.user.id;
-  const { items, shipping_address } = req.body;
+  const { items, shipping_address, shippingFeePercent } = req.body; // receive shipping fee %
 
   if (!items || items.length === 0) {
     return res.status(400).json({ message: "No order items" });
   }
-
   try {
+
+    const result = await pool.query("SELECT enabled FROM order_settings LIMIT 1");
+      if (!result.rows[0].enabled) {
+        return res.status(403).json({
+          success: false,
+          message: "Ordering is currently disabled."
+        });
+      }
     // 1️⃣ Check stock safely
     for (const item of items) {
       const stockRes = await pool.query(
@@ -42,7 +69,8 @@ exports.createOrder = async (req, res) => {
 
     // 2️⃣ Calculate total including shipping
     const itemsTotal = items.reduce((acc, i) => acc + i.price * i.quantity, 0);
-    const total_amount = itemsTotal + SHIPPING_FEE;
+    const shippingAmount = itemsTotal * ((Number(shippingFeePercent) || 0) / 100);
+    const total_amount = itemsTotal + shippingAmount;
     const total_amount_cents = Math.round(total_amount * 100);
 
     // 3️⃣ Create Stripe PaymentIntent
@@ -54,11 +82,11 @@ exports.createOrder = async (req, res) => {
         user_id: user_id.toString(),
         items: JSON.stringify(items),
         shipping_address: shipping_address || "",
-        shipping_fee: SHIPPING_FEE
+        shipping_fee: shippingAmount.toFixed(2) // store as string to avoid parsing issues
       },
     });
 
-    res.status(200).json({ client_secret: paymentIntent.client_secret, shipping_fee: SHIPPING_FEE });
+    res.status(200).json({ client_secret: paymentIntent.client_secret, shipping_fee: shippingAmount });
   } catch (err) {
     console.error("Create Order Error:", err);
     res.status(500).json({ message: err.message || "Failed to create order" });
@@ -66,11 +94,20 @@ exports.createOrder = async (req, res) => {
 };
 
 
-// Stripe webhook - called by Stripe, NOT frontend
+// Stripe Webhook
 exports.stripeWebhook = async (req, res) => {
   let event;
 
   try {
+    const setting = await pool.query("SELECT enabled FROM order_settings LIMIT 1");
+
+    if (!setting.rows[0].enabled) {
+      return res.status(403).json({
+        error: "OrderingDisabled",
+        message: "Ordering is currently disabled."
+      });
+    }
+
     const sig = req.headers["stripe-signature"];
     event = stripe.webhooks.constructEvent(
       req.body,
@@ -82,8 +119,15 @@ exports.stripeWebhook = async (req, res) => {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+
   if (event.type === "payment_intent.succeeded") {
     const paymentIntent = event.data.object;
+
+    if (!paymentIntent.metadata || !paymentIntent.metadata.user_id) {
+      console.log("Missing metadata, skipping event");
+      return res.status(200).send("Skipped, no metadata");
+    }
+
 
     const user_id = paymentIntent.metadata.user_id;
     const items = JSON.parse(paymentIntent.metadata.items);
@@ -96,24 +140,31 @@ exports.stripeWebhook = async (req, res) => {
     const client = await pool.getClient();
 
     try {
+      const existing = await client.query(
+        "SELECT id FROM orders WHERE stripe_payment_id = $1",
+        [paymentIntent.id]
+      );
+      if (existing.rows.length) {
+        console.log("Order already processed for this paymentIntent");
+        return res.status(200).send("Already processed");
+      }
       await client.query("BEGIN");
 
-      // Generate order_number like ORD102
+      
       const randomNum = Math.floor(100 + Math.random() * 900);
       const orderNumber = `ORD${randomNum}`;
 
-      // Create order including shipping fee
       const orderResult = await client.query(
         `INSERT INTO orders 
-          (user_id, payment_method, total_amount, is_paid, paid_at, cart_items, shipping_address, shipping_fee, order_number)
-         VALUES ($1, 'stripe', $2, true, NOW(), $3, $4, $5, $6)
-         RETURNING *`,
-        [user_id, total_amount, JSON.stringify(items), shipping_address, shipping_fee, orderNumber]
+        (user_id, payment_method, total_amount, is_paid, paid_at, cart_items, shipping_address,  order_number, stripe_payment_id)
+        VALUES ($1, 'stripe', $2, true, NOW(), $3, $4, $5, $6)
+        RETURNING *`,
+        [user_id, total_amount, JSON.stringify(items), shipping_address, orderNumber, paymentIntent.id]
       );
 
       const order = orderResult.rows[0];
 
-      // Insert order items & reduce stock
+      // Order items + stock reduce
       for (const item of items) {
         await client.query(
           `INSERT INTO order_items (order_id, product_id, name, price, quantity, image)
@@ -134,24 +185,28 @@ exports.stripeWebhook = async (req, res) => {
         [deliveryToken, order.id]
       );
 
-      // Send email to user with shipping fee
-      const userRes = await client.query(
-        `SELECT name, email FROM users WHERE id = $1`,
-        [user_id]
-      );
+      // User and admin emails
+      const userRes = await client.query(`SELECT name, email FROM users WHERE id = $1`, [user_id]);
       const user = userRes.rows[0];
 
+      const adminRes = await client.query(`SELECT email FROM users WHERE is_admin = true`);
+      const adminEmails = adminRes.rows.map(a => a.email);
+      // ----------------------------
+      //  USER EMAIL
+      // ----------------------------
       const htmlContent = `
         <div style="font-family: Arial, sans-serif; background: #f7f7f7; padding: 20px; color: #333;">
-          <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
+          <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 8px;">
             <div style="background: #02498b; padding: 25px; text-align: center; color: #fff;">
-              <h1 style="margin: 0; font-size: 24px;">ZandMarket</h1>
-              <p style="margin: 5px 0 0; opacity: 0.9;">Order Confirmation</p>
+              <h1>ZandMarket</h1>
+              <p>Order Confirmation</p>
             </div>
             <div style="padding: 25px;">
               <p>Hi <strong>${user.name}</strong>,</p>
               <p>Thank you for your order! Your order number is <strong>${order.order_number}</strong>.</p>
+              
               <p><strong>Shipping Address:</strong><br>${shipping_address || "N/A"}</p>
+
               <h3>Order Summary</h3>
               <table style="width:100%; border-collapse: collapse; margin-top: 10px;">
                 <thead>
@@ -168,12 +223,14 @@ exports.stripeWebhook = async (req, res) => {
                       <td style="padding:10px; text-align:center; border-bottom:1px solid #eee;">${i.quantity}</td>
                       <td style="padding:10px; text-align:right; border-bottom:1px solid #eee;">£${Number(i.price).toFixed(2)}</td>
                     </tr>`).join("")}
+
                   <tr>
                     <td colspan="2" style="padding:10px; text-align:right; font-weight:bold;">Shipping Fee</td>
                     <td style="padding:10px; text-align:right;">£${shipping_fee.toFixed(2)}</td>
                   </tr>
                 </tbody>
               </table>
+
               <p style="font-size:17px; margin-top:15px;"><strong>Total Paid:</strong> £${total_amount.toFixed(2)}</p>
             </div>
           </div>
@@ -186,7 +243,41 @@ exports.stripeWebhook = async (req, res) => {
         html: htmlContent,
       });
 
-      // Admin notification
+      //  ADMIN EMAIL + REMINDER TO UPDATE STATUS
+      const adminHtml = `
+        <div style="font-family: Arial, sans-serif; padding: 20px;">
+          <h2>New Order Received</h2>
+
+          <p>A new order has been placed on ZandMarket.</p>
+
+          <p><strong>Order Number:</strong> ${order.order_number}</p>
+          <p><strong>Customer:</strong> ${user.name}</p>
+          <p><strong>Total:</strong> £${total_amount.toFixed(2)}</p>
+          <p><strong>Shipping Fee:</strong> £${shipping_fee.toFixed(2)}</p>
+
+          <h3>Items</h3>
+          <ul>
+            ${items.map(i => `
+              <li>${i.quantity} × ${i.name} — £${i.price}</li>
+            `).join("")}
+          </ul>
+
+          <hr />
+          
+          <p style="color: red; font-size: 16px;">
+            🔔 <strong>REMINDER:</strong> Don’t forget to update the order status in the admin dashboard once the product has been shipped to the customer.
+          </p>
+        </div>
+      `;
+
+      for (const adminEmail of adminEmails) {
+        await sendEmail({
+          to: adminEmail,
+          subject: `New Order Placed: ${order.order_number}`,
+          html: adminHtml,
+        });
+      }
+
       await createNotification({
         user_id: null,
         title: "New Order Received",
@@ -221,6 +312,8 @@ exports.stripeWebhook = async (req, res) => {
 
   res.json({ received: true });
 };
+
+
 
 
 
@@ -319,34 +412,48 @@ exports.getOrders = async (req, res) => {
   }
 };
 
-
-
+exports.getOrderById = async (req, res) => { 
+  const { id } = req.params; const user_id = req.user.id; 
+  // Make sure your auth middleware sets this 
+  try { 
+    // Fetch the order only if it belongs to the logged-in user 
+    const orderResult = await pool.query( 'SELECT * FROM orders WHERE id = $1 AND user_id = $2', [id, user_id] );
+    const order = orderResult.rows[0]; if (!order) return res.status(404).json({ message: "Order not found or not yours" }); 
+    // Fetch items for this order 
+    const itemsResult = await pool.query('SELECT * FROM order_items WHERE order_id = $1', [id]); order.items = itemsResult.rows; res.json(order); } 
+  catch (err) { 
+    console.error(err);
+    res.status(500).json({ message: "Failed to fetch order" }); 
+  } 
+};
 
 // GET ORDER BY ID (with items)
-exports.getOrderById = async (req, res) => {
-  const { id } = req.params;
-  const user_id = req.user.id; // Make sure your auth middleware sets this
+exports.getOrdersByUser = async (req, res) => {
+  const user_id = req.user.id;
 
   try {
-    // Fetch the order only if it belongs to the logged-in user
-    const orderResult = await pool.query(
-      'SELECT * FROM orders WHERE id = $1 AND user_id = $2',
-      [id, user_id]
+    const ordersRes = await pool.query(
+      'SELECT * FROM orders WHERE user_id = $1 ORDER BY created_at DESC',
+      [user_id]
     );
+    const orders = ordersRes.rows;
 
-    const order = orderResult.rows[0];
-    if (!order) return res.status(404).json({ message: "Order not found or not yours" });
+    for (const order of orders) {
+      const itemsRes = await pool.query(
+        'SELECT * FROM order_items WHERE order_id = $1',
+        [order.id]
+      );
+      order.items = itemsRes.rows;
+    }
 
-    // Fetch items for this order
-    const itemsResult = await pool.query('SELECT * FROM order_items WHERE order_id = $1', [id]);
-    order.items = itemsResult.rows;
-
-    res.json(order);
+    res.json(orders);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Failed to fetch order" });
+    res.status(500).json({ message: 'Failed to fetch orders' });
   }
 };
+
+
 
 
 // UPDATE ORDER STATUS

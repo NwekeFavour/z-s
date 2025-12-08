@@ -36,51 +36,51 @@ exports.sendOTP = async (req, res) => {
       to: email,
       subject: "Verify Your Email",
       html: `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>OTP Verification</title>
-</head>
-<body style="margin:0; padding:0; font-family: Arial, sans-serif; background-color: #f5f7fa;">
-  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f5f7fa; margin:0; padding:40px 0;">
-    <tr>
-      <td align="center" valign="top">
-        <table width="420" cellpadding="0" cellspacing="0" border="0" style="background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 6px 18px rgba(0,0,0,0.08); margin:0;">
-          
-          <!-- Top Banner -->
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <title>OTP Verification</title>
+      </head>
+      <body style="margin:0; padding:0; font-family: Arial, sans-serif; background-color: #f5f7fa;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f5f7fa; margin:0; padding:40px 0;">
           <tr>
-            <td style="background-color: #02489b; text-align:center; padding: 25px 20px; color:white; font-size:22px; font-weight:bold;">
-              ZandMarket
+            <td align="center" valign="top">
+              <table width="420" cellpadding="0" cellspacing="0" border="0" style="background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 6px 18px rgba(0,0,0,0.08); margin:0;">
+                
+                <!-- Top Banner -->
+                <tr>
+                  <td style="background-color: #02489b; text-align:center; padding: 25px 20px; color:white; font-size:22px; font-weight:bold;">
+                    ZandMarket
+                  </td>
+                </tr>
+
+                <!-- Greeting & OTP -->
+                <tr>
+                  <td style="padding: 30px 25px; text-align:center;">
+                    <h2 style="margin: 0 0 10px; color:#02489b;">Hello ${name},</h2>
+                    <p style="margin:0 0 25px; font-size:16px; color:#333;">Use the following OTP to complete your registration:</p>
+                    <div style="display:inline-block; background-color:#02489b; color:white; font-size:28px; font-weight:bold; padding:15px 35px; border-radius:8px; letter-spacing:3px;">
+                      ${otp}
+                    </div>
+                    <p style="margin:25px 0 0; font-size:14px; color:#555;">This OTP is valid for 10 minutes only.</p>
+                  </td>
+                </tr>
+
+                <!-- Footer -->
+                <tr>
+                  <td style="background-color:#f1f3f6; text-align:center; padding:20px; font-size:12px; color:#777;">
+                    © ${new Date().getFullYear()} ZandMarket. All rights reserved.
+                  </td>
+                </tr>
+
+              </table>
             </td>
           </tr>
-
-          <!-- Greeting & OTP -->
-          <tr>
-            <td style="padding: 30px 25px; text-align:center;">
-              <h2 style="margin: 0 0 10px; color:#02489b;">Hello ${name},</h2>
-              <p style="margin:0 0 25px; font-size:16px; color:#333;">Use the following OTP to complete your registration:</p>
-              <div style="display:inline-block; background-color:#02489b; color:white; font-size:28px; font-weight:bold; padding:15px 35px; border-radius:8px; letter-spacing:3px;">
-                ${otp}
-              </div>
-              <p style="margin:25px 0 0; font-size:14px; color:#555;">This OTP is valid for 10 minutes only.</p>
-            </td>
-          </tr>
-
-          <!-- Footer -->
-          <tr>
-            <td style="background-color:#f1f3f6; text-align:center; padding:20px; font-size:12px; color:#777;">
-              © ${new Date().getFullYear()} ZandMarket. All rights reserved.
-            </td>
-          </tr>
-
         </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>
-`
+      </body>
+      </html>
+      `
 
     });
 
@@ -151,12 +151,56 @@ exports.verifyOTP = async (req, res) => {
 };
 
 
+exports.getShippingFee = async (req, res) => {
+  try {
+    // Fetch shipping_fee from the first user (adjust logic if needed)
+    const { rows } = await db.query("SELECT shipping_fee FROM users LIMIT 1");
+    res.json({ shipping_fee: rows[0]?.shipping_fee || 0 });
+  } catch (err) {
+    console.error("Fetch shipping fee error:", err);
+    res.status(500).json({ error: "Failed to fetch shipping fee" });
+  }
+};
+
+exports.updateShippingFee = async (req, res) => {
+  try {
+    const userId = req.user.id
+    const { shipping_fee } = req.body;
+
+    if (shipping_fee === undefined) {
+      return res.status(400).json({ message: "Shipping fee is required" });
+    }
+
+    const result = await db.query(
+      `UPDATE users 
+       SET shipping_fee = $1, updated_at = NOW()
+       WHERE id = $2 RETURNING id, name, email, shipping_fee`,
+      [shipping_fee, userId]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    return res.status(200).json({
+      message: "Shipping fee updated successfully",
+      user: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Shipping fee update error:", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+
+
+
 
 exports.getUnreadNotifications = async (req, res) => {
   try {
     const { user_id } = req.params;
 
-    const result = await pool.query(
+    const result = await db.query(
       `SELECT *
        FROM notifications
        WHERE user_id = $1 AND is_read = FALSE
@@ -175,7 +219,7 @@ exports.markNotificationsRead = async (req, res) => {
   try {
     const { user_id } = req.params;
 
-    await pool.query(
+    await db.query(
       `UPDATE notifications
        SET is_read = TRUE, updated_at = NOW()
        WHERE user_id = $1 AND is_read = FALSE`,
@@ -236,7 +280,7 @@ exports.forgotPassword = async (req, res) => {
     const { email } = req.body;
 
     const { rows } = await db.query(
-      'SELECT * FROM users WHERE email = $1',
+      'SELECT * FROM users WHERE email = $1',  
       [email]
     );
 

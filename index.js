@@ -7,6 +7,8 @@ app.set("trust proxy", 1);
 const helmet = require("helmet")
 const rateLimit = require("express-rate-limit");
 dotenv.config();
+const bodyParser = require('body-parser')
+
      
 app.use(cors({
   origin: ["http://localhost:5173", "https://zmarket-three.vercel.app", "https://zandmarket.co.uk", "https://www.zandmarket.co.uk"], // allow all origins, or replace "*" with your frontend URL
@@ -21,8 +23,11 @@ const authLimiter = rateLimit({
   message: "Too many login attempts, try again later.",
 });
 
-const { stripeWebhook } = require('./controllers/orderControllers')
-app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), stripeWebhook);
+const { stripeWebhook, getOrderToggle, updateOrderToggle } = require('./controllers/orderControllers')
+app.post("/api/webhooks/stripe",
+  bodyParser.raw({ type: "application/json" }),
+  stripeWebhook
+);
 
 app.use(helmet());
 app.use(rateLimit({ windowMs: 15*60*1000, max: 200 }));
@@ -34,8 +39,11 @@ const userRoutes = require("./routes/userRoutes")
 const statsRoutes = require('./routes/statsRoute');
 const notifyRoutes = require("./routes/notifyRoutes")
 const orderRoutes = require("./routes/orderRoutes") 
+const { protect } = require('./middleware/authMiddleware')
+const { adminOnly } = require('./middleware/adminMiddleware')
  
-  
+app.get('/api/settings/abled', protect, getOrderToggle);
+app.put('/api/settings/abled', protect, adminOnly, updateOrderToggle);
 app.use('/api/cart', cartRoutes); // Use cart routes
 app.use('/api/auth', authLimiter, userRoutes); // use user routes
 app.use('/api',  statsRoutes); // user stats routes
