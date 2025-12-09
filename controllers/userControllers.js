@@ -153,18 +153,23 @@ exports.verifyOTP = async (req, res) => {
 
 exports.getShippingFee = async (req, res) => {
   try {
-    // Fetch shipping_fee from the first user (adjust logic if needed)
-    const { rows } = await db.query("SELECT shipping_fee FROM users LIMIT 1");
-    res.json({ shipping_fee: rows[0]?.shipping_fee || 0 });
-  } catch (err) {
-    console.error("Fetch shipping fee error:", err);
-    res.status(500).json({ error: "Failed to fetch shipping fee" });
+    const result = await db.query(
+      "SELECT shipping_fee FROM app_settings WHERE id = 1"
+    );
+
+    res.status(200).json({
+      shipping_fee: result.rows[0].shipping_fee
+    });
+  } catch (error) {
+    console.error("Get shipping fee error:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
+
+
 exports.updateShippingFee = async (req, res) => {
   try {
-    const userId = req.user.id
     const { shipping_fee } = req.body;
 
     if (shipping_fee === undefined) {
@@ -172,25 +177,23 @@ exports.updateShippingFee = async (req, res) => {
     }
 
     const result = await db.query(
-      `UPDATE users 
+      `UPDATE app_settings
        SET shipping_fee = $1, updated_at = NOW()
-       WHERE id = $2 RETURNING id, name, email, shipping_fee`,
-      [shipping_fee, userId]
+       WHERE id = 1
+       RETURNING shipping_fee`,
+      [shipping_fee]
     );
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({ message: "User not found" });
-    }
 
     return res.status(200).json({
       message: "Shipping fee updated successfully",
-      user: result.rows[0],
+      shipping_fee: result.rows[0].shipping_fee,
     });
   } catch (error) {
     console.error("Shipping fee update error:", error);
     return res.status(500).json({ message: "Server error" });
   }
 };
+
 
 
 

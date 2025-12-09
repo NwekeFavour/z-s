@@ -115,18 +115,26 @@ exports.getProductById = async (req, res) => {
 // Search products by keyword
 // @route   GET /api/products/search?query=keyword
 exports.searchProducts = async (req, res) => {
-  try {
-    const keyword = `%${req.query.query}%`;
-    const { rows } = await db.query(
-      'SELECT * FROM products WHERE name ILIKE $1',
-      [keyword]
-    );
-    res.json(rows);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: error.message });
+  const { query } = req.query;
+
+  if (!query) {
+    return res.json({ products: [] });
   }
+
+  const result = await db.query(
+    `
+    SELECT id, name, category
+    FROM products
+    WHERE name ILIKE $1 OR category ILIKE $1
+    ORDER BY name
+    LIMIT 8
+    `,
+    [`%${query}%`]
+  );
+
+  res.json({ products: result.rows });
 };
+
 
 
 // ===============================
@@ -232,10 +240,6 @@ exports.createProduct = async (req, res) => {
 };
 
 
-
-
-
-// ===============================
 // Update a product (admin only)
 // @route   PUT /api/products/:id
 
