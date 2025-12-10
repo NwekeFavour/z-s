@@ -244,7 +244,11 @@ exports.createProduct = async (req, res) => {
 // @route   PUT /api/products/:id
 
 exports.updateProduct = async (req, res) => {
+  const client = await db.getClient();
+
   try {
+    await client.query("BEGIN");
+
     const productId = req.params.id;
 
     let {
@@ -255,79 +259,139 @@ exports.updateProduct = async (req, res) => {
       category,
       stock,
       is_featured,
-      unlimited_stock
+      unlimited_stock,
+      removedImages
     } = req.body;
 
-    // --- Parse numbers ---
+    // ------------------ Parse fields ------------------
     price = price !== undefined ? parseFloat(price) : undefined;
-    discount_percentage = discount_percentage !== undefined ? parseInt(discount_percentage) : undefined;
-    stock = stock !== undefined && stock !== "" ? parseInt(stock) : undefined;
+    discount_percentage =
+      discount_percentage !== undefined
+        ? parseInt(discount_percentage)
+        : undefined;
+    stock =
+      stock !== undefined && stock !== ""
+        ? parseInt(stock)
+        : undefined;
 
-    // --- Parse booleans ---
-    is_featured = is_featured !== undefined ? is_featured === "true" : undefined;
-    unlimited_stock = unlimited_stock !== undefined ? unlimited_stock === "true" : undefined;
+    is_featured =
+      is_featured !== undefined ? is_featured === "true" : undefined;
+    unlimited_stock =
+      unlimited_stock !== undefined
+        ? unlimited_stock === "true"
+        : undefined;
 
-    if (unlimited_stock) stock = null;
+    if (unlimited_stock === true) stock = null;
 
-    // --- Dynamic query for product fields ---
+    // ------------------ Update product ------------------
     const fields = [];
     const values = [];
     let idx = 1;
 
     if (name !== undefined) fields.push(`name=$${idx++}`), values.push(name);
-    if (description !== undefined) fields.push(`description=$${idx++}`), values.push(description);
+    if (description !== undefined)
+      fields.push(`description=$${idx++}`),
+        values.push(description);
     if (price !== undefined) fields.push(`price=$${idx++}`), values.push(price);
-    if (discount_percentage !== undefined) fields.push(`discount_percentage=$${idx++}`), values.push(discount_percentage);
-    if (category !== undefined) fields.push(`category=$${idx++}`), values.push(category);
-    if (stock !== undefined) fields.push(`stock=$${idx++}`), values.push(stock);
-    if (is_featured !== undefined) fields.push(`is_featured=$${idx++}`), values.push(is_featured);
-    if (unlimited_stock !== undefined) fields.push(`unlimited_stock=$${idx++}`), values.push(unlimited_stock);
+    if (discount_percentage !== undefined)
+      fields.push(`discount_percentage=$${idx++}`),
+        values.push(discount_percentage);
+    if (category !== undefined)
+      fields.push(`category=$${idx++}`),
+        values.push(category);
+    if (stock !== undefined)
+      fields.push(`stock=$${idx++}`),
+        values.push(stock);
+    if (is_featured !== undefined)
+      fields.push(`is_featured=$${idx++}`),
+        values.push(is_featured);
+    if (unlimited_stock !== undefined)
+      fields.push(`unlimited_stock=$${idx++}`),
+        values.push(unlimited_stock);
 
     fields.push(`updated_at=NOW()`);
-    const query = `UPDATE products SET ${fields.join(", ")} WHERE id=$${idx} RETURNING *`;
+
+    const updateQuery = `
+      UPDATE products
+      SET ${fields.join(", ")}
+      WHERE id=$${idx}
+      RETURNING *
+    `;
+
     values.push(productId);
 
-    const { rows } = await db.query(query, values);
-    if (!rows.length) return res.status(404).json({ message: "Product not found" });
+    const { rows } = await client.query(updateQuery, values);
+
+    if (!rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Product not found" });
+    }
+
     const updatedProduct = rows[0];
 
-    // --- Handle new images if any ---
+    // ------------------ Handle removed images ------------------
+    const removed = JSON.parse(removedImages || "[]");
+
+    for (const imageUrl of removed) {
+      // Delete from DB
+      await client.query(
+        "DELETE FROM product_images WHERE product_id=$1 AND image_url=$2",
+        [productId, imageUrl]
+      );
+
+      // Delete from Cloudinary
+      const publicId = imageUrl
+        .split("/")
+        .slice(-2)
+        .join("/")
+        .replace(/\.[^/.]+$/, "");
+
+      await cloudinary.uploader.destroy(publicId);
+    }
+
+    // ------------------ Upload new images ------------------
     if (req.files?.length > 0) {
-      const uploadedUrls = [];
       for (const file of req.files) {
-        const url = await new Promise((resolve, reject) => {
+        const imageUrl = await new Promise((resolve, reject) => {
           const stream = cloudinary.uploader.upload_stream(
             { folder: "zandmarket-products" },
-            (err, result) => err ? reject(err) : resolve(result.secure_url)
+            (err, result) => {
+              if (err) return reject(err);
+              resolve(result.secure_url);
+            }
           );
           stream.end(file.buffer);
         });
-        uploadedUrls.push(url);
-      }
 
-      // Insert new images into product_images (keep old ones)
-      for (const url of uploadedUrls) {
-        await db.query(
+        await client.query(
           "INSERT INTO product_images (product_id, image_url) VALUES ($1, $2)",
-          [productId, url]
+          [productId, imageUrl]
         );
       }
     }
 
-    // --- Fetch all images (old + new) ---
-    const { rows: imageRows } = await db.query(
+    // ------------------ Fetch final images ------------------
+    const { rows: imageRows } = await client.query(
       "SELECT image_url FROM product_images WHERE product_id=$1 ORDER BY id ASC",
       [productId]
     );
+
     updatedProduct.images = imageRows.map(r => r.image_url);
+
+    await client.query("COMMIT");
 
     res.json(updatedProduct);
 
   } catch (err) {
-    console.error(err);
+    await client.query("ROLLBACK");
+    console.error("Update product error:", err);
     res.status(500).json({ message: err.message });
+
+  } finally {
+    client.release();
   }
 };
+
 
 
 
