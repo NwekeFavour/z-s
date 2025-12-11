@@ -5,78 +5,76 @@ const { createNotification } = require('./notificationController');
 // Get all products (with optional filters)
 // @route   GET /api/products
 
-exports.getAllProducts = async (req, res) => {
-  try {
-    const { category, sort = "recent", page = 1, limit = 10 } = req.query;
+  exports.getAllProducts = async (req, res) => {
+    try {
+      const { category, sort = "recent" } = req.query; // remove page & limit
 
-    const offset = (page - 1) * limit;
-    const params = [];
-    let i = 1;
+      const params = [];
+      let i = 1;
 
-    // Select fields explicitly and cast unlimited_stock to boolean
-    let query = `
-      SELECT 
-        p.id,
-        p.name,
-        p.description,
-        p.price,
-        p.discount_percentage,
-        p.category,
-        p.stock,
-        COALESCE(p.unlimited_stock, false)::boolean AS unlimited_stock,
-        p.is_featured,
-        p.created_at,
-        p.updated_at,
-        COALESCE(JSON_AGG(pi.image_url) FILTER (WHERE pi.id IS NOT NULL), '[]') AS images
-      FROM products p
-      LEFT JOIN product_images pi ON p.id = pi.product_id
-      WHERE 1=1
-    `;
+      // Base query: select products and aggregate images
+      let query = `
+        SELECT 
+          p.id,
+          p.name,
+          p.description,
+          p.price,
+          p.discount_percentage,
+          p.category,
+          p.stock,
+          COALESCE(p.unlimited_stock, false)::boolean AS unlimited_stock,
+          p.is_featured,
+          p.created_at,
+          p.updated_at,
+          COALESCE(JSON_AGG(pi.image_url) FILTER (WHERE pi.id IS NOT NULL), '[]') AS images
+        FROM products p
+        LEFT JOIN product_images pi ON p.id = pi.product_id
+        WHERE 1=1
+      `;
 
-    // Optional category filter
-    if (category) {
-      query += ` AND p.category = $${i}`;
-      params.push(category);
-      i++;
-    }
-
-    query += ` GROUP BY p.id `;
-
-    // Sorting
-    if (sort === "priceLow") {
-      query += ` ORDER BY p.price ASC `;
-    } else if (sort === "priceHigh") {
-      query += ` ORDER BY p.price DESC `;
-    } else {
-      query += ` ORDER BY p.created_at DESC `;
-    }
-
-    // Pagination
-    query += ` LIMIT $${i} OFFSET $${i + 1} `;
-    params.push(limit, offset);
-
-    const { rows } = await db.query(query, params);
-
-    res.json(rows);
-    // console.log("Products fetched:", rows);
-   for (const product of rows) {
-      if (!product.unlimited_stock && product.stock < 5) {
-        // createNotification already checks for duplicates internally
-        await createNotification({
-          user_id: null,
-          title: "Low Stock Alert",
-          message: `${product.name} is running low (${product.stock} left).`,
-          type: "stock",
-          data: { id: product.id, name: product.name, stock: product.stock },
-          triggeredBy: "System",
-        });
+      // Optional category filter
+      if (category) {
+        query += ` AND p.category = $${i}`;
+        params.push(category);
+        i++;
       }
+
+      query += ` GROUP BY p.id `;
+
+      // Sorting
+      if (sort === "priceLow") {
+        query += ` ORDER BY p.price ASC `;
+      } else if (sort === "priceHigh") {
+        query += ` ORDER BY p.price DESC `;
+      } else {
+        query += ` ORDER BY p.created_at DESC `;
+      }
+
+      // Fetch all products without LIMIT
+      const { rows } = await db.query(query, params);
+
+      // Optionally, create low-stock notifications
+      for (const product of rows) {
+        if (!product.unlimited_stock && product.stock < 5) {
+          await createNotification({
+            user_id: null,
+            title: "Low Stock Alert",
+            message: `${product.name} is running low (${product.stock} left).`,
+            type: "stock",
+            data: { id: product.id, name: product.name, stock: product.stock },
+            triggeredBy: "System",
+          });
+        }
+      }
+
+      // Send all products to frontend
+      res.json(rows);
+
+    } catch (error) {
+      console.error("Error fetching products:", error);
+      res.status(500).json({ message: "Server error" });
     }
-  } catch (error) {
-    console.error("Error fetching products:", error);
-    res.status(500).json({ message: "Server error" });
-  }
-};
+  };
 
 // ===============================
 // Get single product by ID
@@ -151,19 +149,29 @@ exports.createProduct = async (req, res) => {
       category,
       stock,
       unlimited_stock,
+      is_featured
     } = req.body;
 
-    let is_featured = req.body.is_featured === 'true';
+    // Convert booleans safely
     const unlimited = unlimited_stock === "true" || unlimited_stock === true;
+    const featured = is_featured === "true" || is_featured === true;
 
-    // Validate max image count
+    // ---------- VALIDATIONS ----------
+    if (!name || !description || !price || !category) {
+      return res.status(400).json({ message: "Missing required fields." });
+    }
+
+    if (discount_percentage && (discount_percentage < 0 || discount_percentage > 100)) {
+      return res.status(400).json({ message: "Invalid discount percentage." });
+    }
+
+    // ---------- IMAGE VALIDATION ----------
     if (req.files && req.files.length > 5) {
       return res.status(400).json({
         message: "You cannot upload more than 5 images.",
       });
     }
 
-    // Validate each image size ≤ 5MB
     if (req.files) {
       for (const file of req.files) {
         if (file.size > 5 * 1024 * 1024) {
@@ -174,9 +182,10 @@ exports.createProduct = async (req, res) => {
       }
     }
 
-    // Upload images to Cloudinary
+    // ---------- CLOUDINARY UPLOAD ----------
     let imageUrls = [];
-    if (req.files && req.files.length > 0) {
+
+    if (req.files?.length > 0) {
       for (const file of req.files) {
         const url = await new Promise((resolve, reject) => {
           const stream = cloudinary.uploader.upload_stream(
@@ -188,56 +197,62 @@ exports.createProduct = async (req, res) => {
           );
           stream.end(file.buffer);
         });
+
         imageUrls.push(url);
       }
     }
 
-    // Determine final stock value
-    const finalStock = unlimited ? null : stock; // or 0 if you prefer
+    // ---------- STOCK HANDLING ----------
+    // Never insert NULL into a NOT NULL column
+    const finalStock = unlimited ? 0 : Number(stock);
 
-    // Insert main product
-    const insertProduct = `
+    if (!unlimited && (isNaN(finalStock) || finalStock < 0)) {
+      return res.status(400).json({ message: "Stock must be a non-negative number." });
+    }
+
+    // ---------- INSERT PRODUCT ----------
+    const insertProductQuery = `
       INSERT INTO products 
       (name, description, price, discount_percentage, category, stock, unlimited_stock, is_featured, created_at, updated_at)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
       RETURNING *
     `;
 
-    const { rows } = await db.query(insertProduct, [
+    const { rows } = await db.query(insertProductQuery, [
       name,
       description,
       price,
-      discount_percentage,
+      discount_percentage || 0,
       category,
       finalStock,
       unlimited,
-      is_featured,
+      featured
     ]);
 
     const product = rows[0];
 
-    // Insert image URLs into product_images
+    // ---------- INSERT IMAGES ----------
     if (imageUrls.length > 0) {
       const values = imageUrls.map((_, i) => `($1, $${i + 2})`).join(",");
-      const imageQuery = `
-        INSERT INTO product_images (product_id, image_url)
-        VALUES ${values}
-      `;
-      await db.query(imageQuery, [product.id, ...imageUrls]);
+      const imgQuery = `INSERT INTO product_images (product_id, image_url) VALUES ${values}`;
+      await db.query(imgQuery, [product.id, ...imageUrls]);
     }
 
-    res.status(201).json({
+    // ---------- RESPONSE ----------
+    return res.status(201).json({
       ...product,
-      images: imageUrls,
+      images: imageUrls
     });
 
   } catch (err) {
     console.error("CREATE PRODUCT ERROR:", err);
-    res.status(500).json({
-      message: err.message,
+    return res.status(500).json({
+      message: "Server error while creating product.",
+      error: err.message
     });
   }
 };
+
 
 
 // Update a product (admin only)

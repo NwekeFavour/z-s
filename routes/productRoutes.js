@@ -18,8 +18,8 @@ router.get('/search', searchProducts); // Search products by keyword
 router.get('/:id', getProductById); // Get a single product by ID
 
 // Admin routes (only accessible to admins)
-router.post('/', protect, adminOnly, upload.array("images", 10), createProduct);
-router.put('/:id', protect, adminOnly, upload.array("images", 10), updateProduct);
+router.post('/', protect, adminOnly, upload.array("images", 5), createProduct);
+router.put('/:id', protect, adminOnly, upload.array("images", 5), updateProduct);
 router.delete('/:id', protect, adminOnly, deleteProduct);
 
   
