@@ -1,5 +1,5 @@
 const express = require('express');
-const { createOrder, getOrders, updateOrderStatus, getWishList, addToWishlist, deleteWishlist, clearWishlist, deleteOrder, confirmDelivery, markOrderReceived, getOrdersByUser, getOrderById } = require('../controllers/orderControllers');
+const { createCheckoutSession, getOrders, updateOrderStatus, getWishList, addToWishlist, deleteWishlist, clearWishlist, deleteOrder, confirmDelivery, markOrderReceived, getOrdersByUser, getOrderById } = require('../controllers/orderControllers');
 const { protect } = require('../middleware/authMiddleware');
 const { adminOnly } = require('../middleware/adminMiddleware');
 const router = express.Router();
@@ -13,7 +13,7 @@ router.delete('/wishlist/:product_id', protect, deleteWishlist)
 
 
 // order
-router.post('/', protect, createOrder);
+router.post('/', protect, createCheckoutSession);
 router.get('/', protect, getOrders);
 
 router.get("/:orderId/confirm-delivery", confirmDelivery);

@@ -31,140 +31,135 @@ exports.updateOrderToggle = async (req, res) => {
 
 // Create a PaymentIntent - frontend calls THIS endpoint
 // ================= Create Order =================
-exports.createOrder = async (req, res) => {
+exports.createCheckoutSession = async (req, res) => {
   const user_id = req.user.id;
-  const { items, shipping_address, shippingFeePercent } = req.body; // receive shipping fee %
+  const { items, shipping_address, shippingFeePercent } = req.body;
 
-  if (!items || items.length === 0) {
-    return res.status(400).json({ message: "No order items" });
-  }
+  if (!items || !items.length) return res.status(400).json({ message: "No order items" });
+
   try {
+    // 1️⃣ Check ordering enabled
+    const setting = await pool.query("SELECT enabled FROM order_settings LIMIT 1");
+    if (!setting.rows[0]?.enabled) return res.status(403).json({ message: "Ordering is disabled" });
 
-    const result = await pool.query("SELECT enabled FROM order_settings LIMIT 1");
-      if (!result.rows[0].enabled) {
-        return res.status(403).json({
-          success: false,
-          message: "Ordering is currently disabled."
-        });
-      }
-    // 1️⃣ Check stock safely
+    // 2️⃣ Fetch user
+    const userRes = await pool.query("SELECT id, name, email FROM users WHERE id = $1", [user_id]);
+    const user = userRes.rows[0];
+
+    // 3️⃣ Validate stock
     for (const item of items) {
       const stockRes = await pool.query(
-        `SELECT stock, name, unlimited_stock FROM products WHERE id = $1`,
+        `SELECT stock, unlimited_stock, name FROM products WHERE id = $1`,
         [item.product_id]
       );
-
-      if (!stockRes.rows.length) {
-        return res.status(404).json({ message: `Product not found: ${item.name}` });
-      }
-
       const product = stockRes.rows[0];
-
+      if (!product) throw new Error(`Product not found: ${item.name}`);
       if (!product.unlimited_stock && product.stock < item.quantity) {
-        return res.status(400).json({
-          message: `Insufficient stock for ${product.name}. Available: ${product.stock}`
-        });
+        throw new Error(`Insufficient stock for ${product.name}`);
       }
     }
 
-    // 2️⃣ Calculate total including shipping
+    // 4️⃣ Calculate totals
     const itemsTotal = items.reduce((acc, i) => acc + i.price * i.quantity, 0);
     const shippingAmount = itemsTotal * ((Number(shippingFeePercent) || 0) / 100);
-    const total_amount = itemsTotal + shippingAmount;
-    const total_amount_cents = Math.round(total_amount * 100);
 
-    // 3️⃣ Create Stripe PaymentIntent
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: total_amount_cents,
-      currency: "gbp",
-      automatic_payment_methods: { enabled: true },
-      metadata: {
-        user_id: user_id.toString(),
-        items: JSON.stringify(items),
-        shipping_address: shipping_address || "",
-        shipping_fee: shippingAmount.toFixed(2) // store as string to avoid parsing issues
+    // 5️⃣ Stripe line items
+    const line_items = items.map(i => ({
+      price_data: {
+        currency: "gbp",
+        product_data: { name: i.name, images: i.image ? [i.image] : [] },
+        unit_amount: Math.round(i.price * 100),
       },
+      quantity: i.quantity,
+    }));
+
+    if (shippingAmount > 0) {
+      line_items.push({
+        price_data: {
+          currency: "gbp",
+          product_data: { name: "Shipping Fee" },
+          unit_amount: Math.round(shippingAmount * 100),
+        },
+        quantity: 1,
+      });
+    }
+
+    // 6️⃣ Create Checkout Session
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card", "bacs_debit"], // UK bank transfer included
+      mode: "payment",
+      customer_email: user.email,
+      line_items,
+      metadata: {
+        user_id: user.id.toString(),
+        shipping_address,
+        items: JSON.stringify(items),
+        shipping_fee: shippingAmount.toFixed(2),
+      },
+      success_url: `${process.env.FRONTEND_URL}/settings?tab=My+Orders`,
+      cancel_url: `${process.env.FRONTEND_URL}/cart`,
     });
 
-    res.status(200).json({ client_secret: paymentIntent.client_secret, shipping_fee: shippingAmount });
+    res.json({ url: session.url });
   } catch (err) {
-    console.error("Create Order Error:", err);
-    res.status(500).json({ message: err.message || "Failed to create order" });
+    console.error("Checkout error:", err);
+    res.status(500).json({ message: err.message });
   }
 };
 
-
-// Stripe Webhook
+// ================= Stripe Webhook =================
 exports.stripeWebhook = async (req, res) => {
   let event;
 
   try {
-    const setting = await pool.query("SELECT enabled FROM order_settings LIMIT 1");
-
-    if (!setting.rows[0].enabled) {
-      return res.status(403).json({
-        error: "OrderingDisabled",
-        message: "Ordering is currently disabled."
-      });
-    }
-
     const sig = req.headers["stripe-signature"];
-    event = stripe.webhooks.constructEvent(
-      req.body,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET
-    );
+    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
     console.error("Webhook signature error:", err);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object;
 
-  if (event.type === "payment_intent.succeeded") {
-    const paymentIntent = event.data.object;
+    // 1️⃣ Payment status
+    if (session.payment_status !== "paid") return res.status(200).send("Payment not completed");
 
-    if (!paymentIntent.metadata || !paymentIntent.metadata.user_id) {
-      console.log("Missing metadata, skipping event");
-      return res.status(200).send("Skipped, no metadata");
-    }
+    // 2️⃣ Extract metadata
+    if (!session.metadata?.user_id) return res.status(200).send("No metadata");
 
-
-    const user_id = paymentIntent.metadata.user_id;
-    const items = JSON.parse(paymentIntent.metadata.items);
-    const shipping_address = paymentIntent.metadata.shipping_address;
-    const shipping_fee = parseFloat(paymentIntent.metadata.shipping_fee || 0);
-
+    const user_id = session.metadata.user_id;
+    const items = JSON.parse(session.metadata.items);
+    const shipping_address = session.metadata.shipping_address;
+    const shipping_fee = parseFloat(session.metadata.shipping_fee || 0);
     const itemsTotal = items.reduce((acc, i) => acc + i.price * i.quantity, 0);
     const total_amount = itemsTotal + shipping_fee;
+    const paymentIntentId = session.payment_intent;
 
     const client = await pool.getClient();
 
     try {
       const existing = await client.query(
         "SELECT id FROM orders WHERE stripe_payment_id = $1",
-        [paymentIntent.id]
+        [paymentIntentId]
       );
-      if (existing.rows.length) {
-        console.log("Order already processed for this paymentIntent");
-        return res.status(200).send("Already processed");
-      }
+      if (existing.rows.length) return res.status(200).send("Order already processed");
+
       await client.query("BEGIN");
 
-      
-      const randomNum = Math.floor(100 + Math.random() * 900);
-      const orderNumber = `ORD${randomNum}`;
+      const orderNumber = `ORD${Math.floor(100 + Math.random() * 900)}`;
 
       const orderResult = await client.query(
         `INSERT INTO orders 
-        (user_id, payment_method, total_amount, is_paid, paid_at, cart_items, shipping_address,  order_number, stripe_payment_id)
-        VALUES ($1, 'stripe', $2, true, NOW(), $3, $4, $5, $6)
-        RETURNING *`,
-        [user_id, total_amount, JSON.stringify(items), shipping_address, orderNumber, paymentIntent.id]
+          (user_id, payment_method, total_amount, is_paid, paid_at, cart_items, shipping_address, order_number, stripe_payment_id)
+          VALUES ($1, 'stripe', $2, TRUE, NOW(), $3, $4, $5, $6)
+          RETURNING *`,
+        [user_id, total_amount, JSON.stringify(items), shipping_address, orderNumber, paymentIntentId]
       );
 
       const order = orderResult.rows[0];
 
-      // Order items + stock reduce
+      // Insert order items and reduce stock
       for (const item of items) {
         await client.query(
           `INSERT INTO order_items (order_id, product_id, name, price, quantity, image)
@@ -180,20 +175,15 @@ exports.stripeWebhook = async (req, res) => {
 
       // Delivery token
       const deliveryToken = crypto.randomBytes(32).toString("hex");
-      await client.query(
-        `UPDATE orders SET delivery_token = $1 WHERE id = $2`,
-        [deliveryToken, order.id]
-      );
+      await client.query(`UPDATE orders SET delivery_token = $1 WHERE id = $2`, [deliveryToken, order.id]);
 
-      // User and admin emails
+      // Emails
       const userRes = await client.query(`SELECT name, email FROM users WHERE id = $1`, [user_id]);
       const user = userRes.rows[0];
 
       const adminRes = await client.query(`SELECT email FROM users WHERE is_admin = true`);
       const adminEmails = adminRes.rows.map(a => a.email);
-      // ----------------------------
-      //  USER EMAIL
-      // ----------------------------
+
       const htmlContent = `
         <div style="font-family: Arial, sans-serif; background: #f7f7f7; padding: 20px; color: #333;">
           <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 8px;">
@@ -236,14 +226,8 @@ exports.stripeWebhook = async (req, res) => {
           </div>
         </div>
       `;
+      await sendEmail({ to: user.email, subject: `ZandMarket Order ${order.order_number}`, html: htmlContent });
 
-      await sendEmail({
-        to: user.email,
-        subject: `Your ZandMarket Order Confirmation ${order.order_number}`,
-        html: htmlContent,
-      });
-
-      //  ADMIN EMAIL + REMINDER TO UPDATE STATUS
       const adminHtml = `
         <div style="font-family: Arial, sans-serif; padding: 20px;">
           <h2>New Order Received</h2>
@@ -270,48 +254,263 @@ exports.stripeWebhook = async (req, res) => {
         </div>
       `;
 
+      // Admin notifications
       for (const adminEmail of adminEmails) {
-        await sendEmail({
-          to: adminEmail,
-          subject: `New Order Placed: ${order.order_number}`,
-          html: adminHtml,
-        });
+        await sendEmail({ to: adminEmail, subject: `New Order: ${order.order_number}`, html: adminHtml});
       }
 
       await createNotification({
         user_id: null,
         title: "New Order Received",
-        message: `A new order ${order.order_number} was placed.`,
+        message: `Order ${order.order_number} placed.`,
         type: "order",
-        data: [
-          {
-            id: order.id,
-            customer_name: user.name,
-            items: items.map(i => ({
-              product_id: i.product_id,
-              name: i.name,
-              price: i.price,
-              quantity: i.quantity
-            })),
-            shipping_fee
-          }
-        ],
+        data: [{ id: order.id, customer_name: user.name, items, shipping_fee }],
         triggeredBy: "System",
       });
 
       await client.query("COMMIT");
-      return res.status(200).send("Order processed");
+      res.status(200).send("Order processed");
     } catch (err) {
       await client.query("ROLLBACK");
       console.error("Webhook Order Error:", err);
-      return res.status(500).send("Webhook failed");
+      res.status(500).send("Webhook failed");
     } finally {
       client.release();
     }
+  } else {
+    res.json({ received: true });
   }
-
-  res.json({ received: true });
 };
+
+
+
+// // Stripe Webhook
+// exports.stripeWebhook = async (req, res) => {
+//   let event;
+
+//   try {
+//     const setting = await pool.query("SELECT enabled FROM order_settings LIMIT 1");
+
+//     if (!setting.rows[0].enabled) {
+//       return res.status(403).json({
+//         error: "OrderingDisabled",
+//         message: "Ordering is currently disabled."
+//       });
+//     }
+
+//     const sig = req.headers["stripe-signature"];
+//     event = stripe.webhooks.constructEvent(
+//       req.body,
+//       sig,
+//       process.env.STRIPE_WEBHOOK_SECRET
+//     );
+//   } catch (err) {
+//     console.error("Webhook signature error:", err);
+//     return res.status(400).send(`Webhook Error: ${err.message}`);
+//   }
+
+
+//   if (event.type === "checkout.session.completed") {
+//     const session = event.data.object;
+
+//     // 1️⃣ Ensure payment is completed
+//     if (session.payment_status !== "paid") {
+//       return res.status(200).send("Not paid");
+//     }
+
+//     // 2️⃣ Extract metadata (SOURCE OF TRUTH)
+//     if (!session.metadata || !session.metadata.user_id) {
+//       console.log("Missing metadata, skipping event");
+//       return res.status(200).send("Skipped, no metadata");
+//     }
+
+//     const user_id = session.metadata.user_id;
+//     const items = JSON.parse(session.metadata.items);
+//     const shipping_address = session.metadata.shipping_address;
+//     const shipping_fee = parseFloat(session.metadata.shipping_fee || 0);
+
+//     const itemsTotal = items.reduce(
+//       (acc, i) => acc + i.price * i.quantity,
+//       0
+//     );
+
+//     const total_amount = itemsTotal + shipping_fee;
+
+//     const client = await pool.getClient();
+
+//     try {
+//       const existing = await client.query(
+//         "SELECT id FROM orders WHERE stripe_payment_id = $1",
+//         [paymentIntent.id]
+//       );
+//       if (existing.rows.length) {
+//         console.log("Order already processed for this paymentIntent");
+//         return res.status(200).send("Already processed");
+//       }
+//       await client.query("BEGIN");
+
+      
+//       const randomNum = Math.floor(100 + Math.random() * 900);
+//       const orderNumber = `ORD${randomNum}`;
+
+//       const orderResult = await client.query(
+//         `INSERT INTO orders 
+//         (user_id, payment_method, total_amount, is_paid, paid_at, cart_items, shipping_address,  order_number, stripe_payment_id)
+//         VALUES ($1, 'stripe', $2, true, NOW(), $3, $4, $5, $6)
+//         RETURNING *`,
+//         [user_id, total_amount, JSON.stringify(items), shipping_address, orderNumber, paymentIntent.id]
+//       );
+
+//       const order = orderResult.rows[0];
+
+//       // Order items + stock reduce
+//       for (const item of items) {
+//         await client.query(
+//           `INSERT INTO order_items (order_id, product_id, name, price, quantity, image)
+//            VALUES ($1, $2, $3, $4, $5, $6)`,
+//           [order.id, item.product_id, item.name, item.price, item.quantity, item.image]
+//         );
+
+//         await client.query(
+//           `UPDATE products SET stock = stock - $1 WHERE id = $2 AND stock >= $1`,
+//           [item.quantity, item.product_id]
+//         );
+//       }
+
+//       // Delivery token
+//       const deliveryToken = crypto.randomBytes(32).toString("hex");
+//       await client.query(
+//         `UPDATE orders SET delivery_token = $1 WHERE id = $2`,
+//         [deliveryToken, order.id]
+//       );
+
+//       // User and admin emails
+//       const userRes = await client.query(`SELECT name, email FROM users WHERE id = $1`, [user_id]);
+//       const user = userRes.rows[0];
+
+//       const adminRes = await client.query(`SELECT email FROM users WHERE is_admin = true`);
+//       const adminEmails = adminRes.rows.map(a => a.email);
+//       // ----------------------------
+//       //  USER EMAIL
+//       // ----------------------------
+//       const htmlContent = `
+//         <div style="font-family: Arial, sans-serif; background: #f7f7f7; padding: 20px; color: #333;">
+//           <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 8px;">
+//             <div style="background: #02498b; padding: 25px; text-align: center; color: #fff;">
+//               <h1>ZandMarket</h1>
+//               <p>Order Confirmation</p>
+//             </div>
+//             <div style="padding: 25px;">
+//               <p>Hi <strong>${user.name}</strong>,</p>
+//               <p>Thank you for your order! Your order number is <strong>${order.order_number}</strong>.</p>
+              
+//               <p><strong>Shipping Address:</strong><br>${shipping_address || "N/A"}</p>
+
+//               <h3>Order Summary</h3>
+//               <table style="width:100%; border-collapse: collapse; margin-top: 10px;">
+//                 <thead>
+//                   <tr>
+//                     <th style="text-align:left; padding:10px; background:#f0f0f0;">Item</th>
+//                     <th style="text-align:center; padding:10px; background:#f0f0f0;">Qty</th>
+//                     <th style="text-align:right; padding:10px; background:#f0f0f0;">Price</th>
+//                   </tr>
+//                 </thead>
+//                 <tbody>
+//                   ${items.map(i => `
+//                     <tr>
+//                       <td style="padding:10px; border-bottom:1px solid #eee;">${i.name}</td>
+//                       <td style="padding:10px; text-align:center; border-bottom:1px solid #eee;">${i.quantity}</td>
+//                       <td style="padding:10px; text-align:right; border-bottom:1px solid #eee;">£${Number(i.price).toFixed(2)}</td>
+//                     </tr>`).join("")}
+
+//                   <tr>
+//                     <td colspan="2" style="padding:10px; text-align:right; font-weight:bold;">Shipping Fee</td>
+//                     <td style="padding:10px; text-align:right;">£${shipping_fee.toFixed(2)}</td>
+//                   </tr>
+//                 </tbody>
+//               </table>
+
+//               <p style="font-size:17px; margin-top:15px;"><strong>Total Paid:</strong> £${total_amount.toFixed(2)}</p>
+//             </div>
+//           </div>
+//         </div>
+//       `;
+
+//       await sendEmail({
+//         to: user.email,
+//         subject: `Your ZandMarket Order Confirmation ${order.order_number}`,
+//         html: htmlContent,
+//       });
+
+//       //  ADMIN EMAIL + REMINDER TO UPDATE STATUS
+//       const adminHtml = `
+//         <div style="font-family: Arial, sans-serif; padding: 20px;">
+//           <h2>New Order Received</h2>
+
+//           <p>A new order has been placed on ZandMarket.</p>
+
+//           <p><strong>Order Number:</strong> ${order.order_number}</p>
+//           <p><strong>Customer:</strong> ${user.name}</p>
+//           <p><strong>Total:</strong> £${total_amount.toFixed(2)}</p>
+//           <p><strong>Shipping Fee:</strong> £${shipping_fee.toFixed(2)}</p>
+
+//           <h3>Items</h3>
+//           <ul>
+//             ${items.map(i => `
+//               <li>${i.quantity} × ${i.name} — £${i.price}</li>
+//             `).join("")}
+//           </ul>
+
+//           <hr />
+          
+//           <p style="color: red; font-size: 16px;">
+//             🔔 <strong>REMINDER:</strong> Don’t forget to update the order status in the admin dashboard once the product has been shipped to the customer.
+//           </p>
+//         </div>
+//       `;
+
+//       for (const adminEmail of adminEmails) {
+//         await sendEmail({
+//           to: adminEmail,
+//           subject: `New Order Placed: ${order.order_number}`,
+//           html: adminHtml,
+//         });
+//       }
+
+//       await createNotification({
+//         user_id: null,
+//         title: "New Order Received",
+//         message: `A new order ${order.order_number} was placed.`,
+//         type: "order",
+//         data: [
+//           {
+//             id: order.id,
+//             customer_name: user.name,
+//             items: items.map(i => ({
+//               product_id: i.product_id,
+//               name: i.name,
+//               price: i.price,
+//               quantity: i.quantity
+//             })),
+//             shipping_fee
+//           }
+//         ],
+//         triggeredBy: "System",
+//       });
+
+//       await client.query("COMMIT");
+//       return res.status(200).send("Order processed");
+//     } catch (err) {
+//       await client.query("ROLLBACK");
+//       console.error("Webhook Order Error:", err);
+//       return res.status(500).send("Webhook failed");
+//     } finally {
+//       client.release();
+//     }
+//   }
+
+//   res.json({ received: true });
+// };
 
 
 
