@@ -89,9 +89,6 @@ exports.createCheckoutSession = async (req, res) => {
       mode: "payment",
       customer_email: user.email,
       line_items,
-      automatic_payment_methods: {
-        enabled: true,
-      },
       metadata: {
         user_id: user.id.toString(),
         shipping_address,
