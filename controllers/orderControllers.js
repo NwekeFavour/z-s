@@ -162,12 +162,18 @@ exports.stripeWebhook = async (req, res) => {
       if (existing.rows.length) {client.release(); return res.status(200).send("Order already processed")};
 
       for (const item of items) {
-        if (!item.unlimited_stock && item.stock < item.quantity) {
+        const isUnlimited = Boolean(item.unlimited_stock); // true if unlimited_stock is true
+        const availableStock = isUnlimited ? Infinity : Number(item.stock || 0);
+
+        if (!isUnlimited && availableStock < item.quantity) {
           client.release();
+          console.log("insufficient product")
           console.error(`Insufficient stock for ${item.name}`);
           return res.status(200).send("Insufficient stock");
         }
       }
+
+
 
       await client.query("BEGIN");
 
@@ -185,25 +191,41 @@ exports.stripeWebhook = async (req, res) => {
 
       // Insert order items and reduce stock
       for (const item of items) {
+        const isUnlimited = Boolean(item.unlimited_stock); // ✅ DEFINE IT HERE
         await client.query(
           `INSERT INTO order_items (order_id, product_id, name, price, quantity, image)
            VALUES ($1, $2, $3, $4, $5, $6)`,
           [order.id, item.product_id, item.name, item.price, item.quantity, item.image]
         );
 
+      if (!isUnlimited) {
         const stockUpdate = await client.query(
-          `UPDATE products SET stock = stock - $1 WHERE id = $2 AND stock >= $1`,
+          `UPDATE products 
+          SET stock = COALESCE(stock, 0) - $1 
+          WHERE id = $2 AND (stock IS NOT NULL AND stock >= $1)`,
           [item.quantity, item.product_id]
         );
 
-        // ✅ Check if update actually happened
         if (stockUpdate.rowCount === 0) {
           throw new Error(`Insufficient stock for ${item.name}`);
         }
       }
+
+
+      }
       // Delivery token
       const deliveryToken = crypto.randomBytes(32).toString("hex");
       await client.query(`UPDATE orders SET delivery_token = $1 WHERE id = $2`, [deliveryToken, order.id]);
+
+      await client.query(
+        `
+        DELETE FROM cart_items
+        WHERE cart_id IN (
+          SELECT id FROM carts WHERE user_id = $1
+        )
+        `,
+        [user_id]
+      );
 
       await client.query("COMMIT");
       res.status(200).send("Order processed");

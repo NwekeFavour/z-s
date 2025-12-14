@@ -15,6 +15,7 @@ const getCart = async (req, res) => {
         p.id AS product_id,
         p.name,
         p.stock,
+        p.unlimited_stock,
         pi.image_url,
         (ci.price * (1 - COALESCE(ci.discount_percentage, 0)::NUMERIC / 100)) AS discounted_price
       FROM carts c
@@ -55,14 +56,38 @@ const addItemToCart = async (req, res) => {
     const { productId, quantity } = req.body;
 
     // Check if product exists
-    const productRes = await db.query('SELECT price, discount_percentage FROM products WHERE id = $1', [productId]);
+    const productRes = await db.query(
+      `SELECT price, discount_percentage, stock, unlimited_stock 
+      FROM products 
+      WHERE id = $1`,
+      [productId]
+    );
+
     if (productRes.rows.length === 0) {
       return res.status(404).json({ message: 'Product not found' });
     }
-
     const product = productRes.rows[0];
-    const price = product.price; // store current product price
+    const price = product.price;
     const discount_percentage = product.discount_percentage || 0;
+
+    const isUnlimited = Boolean(product.unlimited_stock);
+    const availableStock = isUnlimited ? Infinity : Number(product.stock || 0);
+
+    // ❌ Block if NOT unlimited and stock is insufficient
+    if (!isUnlimited) {
+      if (!product.stock || availableStock <= 0) {
+        return res.status(400).json({
+          message: "This product is out of stock",
+        });
+      }
+
+      if (quantity > availableStock) {
+        return res.status(400).json({
+          message: `Only ${availableStock} item(s) left in stock`,
+        });
+      }
+    }
+
 
     // Find or create the user's cart
     let cartRes = await db.query('SELECT * FROM carts WHERE user_id = $1', [userId]);
@@ -82,12 +107,21 @@ const addItemToCart = async (req, res) => {
     );
 
     if (itemRes.rows.length > 0) {
-      // Update quantity
+      const currentQty = itemRes.rows[0].quantity;
+      const newQty = currentQty + quantity;
+
+      if (!isUnlimited && newQty > availableStock) {
+        return res.status(400).json({
+          message: `Only ${availableStock} item(s) available`,
+        });
+      }
+
       await db.query(
-        'UPDATE cart_items SET quantity = quantity + $1 WHERE id = $2',
-        [quantity, itemRes.rows[0].id]
+        'UPDATE cart_items SET quantity = $1 WHERE id = $2',
+        [newQty, itemRes.rows[0].id]
       );
-    } else {
+    }
+    else {
       // Insert new item with price and discount_percentage
       await db.query(
         'INSERT INTO cart_items (cart_id, product_id, quantity, price, discount_percentage) VALUES ($1, $2, $3, $4, $5)',
