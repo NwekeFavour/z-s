@@ -121,7 +121,7 @@ exports.stripeWebhook = async (req, res) => {
     for (const pair of itemsSummary) {
       const [product_id, quantity] = pair.split(':');
       const prodRes = await pool.query(
-        `SELECT p.id, p.name, p.price, p.stock, pi.image_url
+        `SELECT p.id, p.name, p.price, p.stock, p.unlimited_stock, pi.image_url
         FROM products p
         LEFT JOIN product_images pi ON pi.product_id = p.id
         WHERE p.id = $1
@@ -134,9 +134,10 @@ exports.stripeWebhook = async (req, res) => {
           product_id: prod.id,
           name: prod.name,
           price: prod.price,
-          image: prod.image_url, // <-- use image_url from product_images
+          image: prod.image_url,
           quantity: Number(quantity),
           stock: prod.stock,
+          unlimited_stock: prod.unlimited_stock, // <-- include this
         });
       }
       else {
