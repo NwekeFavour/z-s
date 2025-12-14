@@ -161,7 +161,7 @@ exports.stripeWebhook = async (req, res) => {
       if (existing.rows.length) {client.release(); return res.status(200).send("Order already processed")};
 
       for (const item of items) {
-        if (item.stock < item.quantity) {
+        if (!item.unlimited_stock && item.stock < item.quantity) {
           client.release();
           console.error(`Insufficient stock for ${item.name}`);
           return res.status(200).send("Insufficient stock");
