@@ -72,7 +72,7 @@ exports.createCheckoutSession = async (req, res) => {
       mode: "payment",
       customer_email: user.email,
       line_items,
-      payment_method_types: ['card', 'pay_by_bank'], // only enabled methods
+      payment_method_types: ['card'], // only enabled methods
       metadata: {
         user_id: user.id.toString(),
         shipping_address,
