@@ -74,10 +74,7 @@ exports.createCheckoutSession = async (req, res) => {
       line_items,
       payment_method_types: ['card', 'pay_by_bank'], // only enabled methods
       metadata: {
-        user_id: user.id.toString(),
-        shipping_address,
-        items: JSON.stringify(items),
-        shipping_fee: shippingAmount.toFixed(2),
+        order_id: order.id.toString(),
       },
       success_url: `${process.env.FRONTEND_URL}/settings?tab=My+Orders`,
       cancel_url: `${process.env.FRONTEND_URL}/cart`,
