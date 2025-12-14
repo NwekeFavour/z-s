@@ -120,18 +120,26 @@ exports.stripeWebhook = async (req, res) => {
     const items = [];
     for (const pair of itemsSummary) {
       const [product_id, quantity] = pair.split(':');
-      const prodRes = await pool.query('SELECT id, name, price, image, stock FROM products WHERE id = $1', [product_id]);
+      const prodRes = await pool.query(
+        `SELECT p.id, p.name, p.price, p.stock, pi.image_url
+        FROM products p
+        LEFT JOIN product_images pi ON pi.product_id = p.id
+        WHERE p.id = $1
+        LIMIT 1`,
+        [product_id]
+      );
       const prod = prodRes.rows[0];
       if (prod) {
-        items.push({ 
+        items.push({
           product_id: prod.id,
           name: prod.name,
           price: prod.price,
-          image: prod.image,
+          image: prod.image_url, // <-- use image_url from product_images
           quantity: Number(quantity),
-          stock: prod.stock
+          stock: prod.stock,
         });
-      } else {
+      }
+      else {
         console.error(`Product ${product_id} not found`);
         // Return 200 to prevent Stripe retry loop
         return res.status(200).send("Product not found");

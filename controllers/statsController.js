@@ -13,7 +13,7 @@ exports.getUsersCount = async (req, res) => {
 };
 exports.getCustomersCount = async (req, res) => {
   try {
-    // 1️⃣ Get latest 10 customers with order info
+    // 1️⃣ Get all customers with order info (no limit)
     const customers = await db.query(`
       SELECT 
         u.id,
@@ -36,7 +36,6 @@ exports.getCustomersCount = async (req, res) => {
       ) o ON u.id = o.user_id
       WHERE u.is_admin = false
       ORDER BY u.created_at DESC
-      LIMIT 10
     `);
 
     // 2️⃣ Get total number of non-admin customers
@@ -57,6 +56,7 @@ exports.getCustomersCount = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
 
 
 exports.getCustomerOrderHistory = async (req, res) => {

@@ -125,7 +125,6 @@ exports.searchProducts = async (req, res) => {
     FROM products
     WHERE name ILIKE $1 OR category ILIKE $1
     ORDER BY name
-    LIMIT 8
     `,
     [`%${query}%`]
   );
