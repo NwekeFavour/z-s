@@ -72,7 +72,7 @@ exports.createCheckoutSession = async (req, res) => {
       mode: "payment",
       customer_email: user.email,
       line_items,
-      // payment_method_types: ['card', 'bacs_debit'], // explicitly enable supported methods
+      payment_method_types: ['card', 'bacs_debit', 'pay_by_bank'], // explicitly enable supported methods
       metadata: {
         user_id: user.id.toString(),
         shipping_address,
@@ -167,7 +167,7 @@ exports.stripeWebhook = async (req, res) => {
 
         if (!isUnlimited && availableStock < item.quantity) {
           client.release();
-          console.log("insufficient product")
+          // console.log("insufficient product")
           console.error(`Insufficient stock for ${item.name}`);
           return res.status(200).send("Insufficient stock");
         }
