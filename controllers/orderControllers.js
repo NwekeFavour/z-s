@@ -38,32 +38,15 @@ exports.createCheckoutSession = async (req, res) => {
   if (!items || !items.length) return res.status(400).json({ message: "No order items" });
 
   try {
-    // 1️⃣ Check ordering enabled
-    const setting = await pool.query("SELECT enabled FROM order_settings LIMIT 1");
-    if (!setting.rows[0]?.enabled) return res.status(403).json({ message: "Ordering is disabled" });
-
-    // 2️⃣ Fetch user
+    // Fetch user
     const userRes = await pool.query("SELECT id, name, email FROM users WHERE id = $1", [user_id]);
     const user = userRes.rows[0];
 
-    // 3️⃣ Validate stock
-    for (const item of items) {
-      const stockRes = await pool.query(
-        `SELECT stock, unlimited_stock, name FROM products WHERE id = $1`,
-        [item.product_id]
-      );
-      const product = stockRes.rows[0];
-      if (!product) throw new Error(`Product not found: ${item.name}`);
-      if (!product.unlimited_stock && product.stock < item.quantity) {
-        throw new Error(`Insufficient stock for ${product.name}`);
-      }
-    }
-
-    // 4️⃣ Calculate totals
+    // Validate stock & calculate totals
     const itemsTotal = items.reduce((acc, i) => acc + i.price * i.quantity, 0);
     const shippingAmount = itemsTotal * ((Number(shippingFeePercent) || 0) / 100);
 
-    // 5️⃣ Stripe line items
+    // Stripe line items
     const line_items = items.map(i => ({
       price_data: {
         currency: "gbp",
@@ -84,11 +67,12 @@ exports.createCheckoutSession = async (req, res) => {
       });
     }
 
-    // 6️⃣ Create Checkout Session
+    // ✅ Use automatic_payment_methods for Stripe to decide available methods
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       customer_email: user.email,
       line_items,
+      automatic_payment_methods: { enabled: true }, // <--- THIS ENABLES ALL SUPPORTED METHODS
       metadata: {
         user_id: user.id.toString(),
         shipping_address,
@@ -106,6 +90,7 @@ exports.createCheckoutSession = async (req, res) => {
   }
 };
 
+
 // ================= Stripe Webhook =================
 exports.stripeWebhook = async (req, res) => {
   let event;
@@ -118,14 +103,18 @@ exports.stripeWebhook = async (req, res) => {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  if (event.type === "checkout.session.completed") {
+  if (event.type === "checkout.session.completed" ||
+    event.type === "checkout.session.async_payment_succeeded") {
     const session = event.data.object;
 
     // 1️⃣ Payment status
-    if (session.payment_status !== "paid") return res.status(200).send("Payment not completed");
-
+    if (event.type === "checkout.session.completed" && session.payment_status !== "paid") {
+        return res.status(200).send("Payment not completed");
+    }
     // 2️⃣ Extract metadata
     if (!session.metadata?.user_id) return res.status(200).send("No metadata");
+
+
 
     const user_id = session.metadata.user_id;
     const items = JSON.parse(session.metadata.items);
@@ -276,6 +265,9 @@ exports.stripeWebhook = async (req, res) => {
     } finally {
       client.release();
     }
+  }  else if (event.type === "checkout.session.async_payment_failed") {
+    const session = event.data.object;
+    console.warn(`Async payment failed for session: ${session.id}`);
   } else {
     res.json({ received: true });
   }
