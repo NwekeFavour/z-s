@@ -82,7 +82,6 @@ exports.createCheckoutSession = async (req, res) => {
       success_url: `${process.env.FRONTEND_URL}/settings?tab=My+Orders`,
       cancel_url: `${process.env.FRONTEND_URL}/cart`,
     });
-
     res.json({ url: session.url });
   } catch (err) {
     console.error("Checkout error:", err);
@@ -117,7 +116,27 @@ exports.stripeWebhook = async (req, res) => {
 
 
     const user_id = session.metadata.user_id;
-    const items = JSON.parse(session.metadata.items);
+    const itemsSummary = session.metadata.items_summary.split(','); // ["37:1","116:1"]
+    const items = [];
+    for (const pair of itemsSummary) {
+      const [product_id, quantity] = pair.split(':');
+      const prodRes = await pool.query('SELECT id, name, price, image, stock FROM products WHERE id = $1', [product_id]);
+      const prod = prodRes.rows[0];
+      if (prod) {
+        items.push({ 
+          product_id: prod.id,
+          name: prod.name,
+          price: prod.price,
+          image: prod.image,
+          quantity: Number(quantity),
+          stock: prod.stock
+        });
+      } else {
+        console.error(`Product ${product_id} not found`);
+        // Return 200 to prevent Stripe retry loop
+        return res.status(200).send("Product not found");
+      }
+    }
     const shipping_address = session.metadata.shipping_address;
     const shipping_fee = parseFloat(session.metadata.shipping_fee || 0);
     const itemsTotal = items.reduce((acc, i) => acc + i.price * i.quantity, 0);
@@ -131,11 +150,19 @@ exports.stripeWebhook = async (req, res) => {
         "SELECT id FROM orders WHERE stripe_payment_id = $1",
         [paymentIntentId]
       );
-      if (existing.rows.length) return res.status(200).send("Order already processed");
+      if (existing.rows.length) {client.release(); return res.status(200).send("Order already processed")};
+
+      for (const item of items) {
+        if (item.stock < item.quantity) {
+          client.release();
+          console.error(`Insufficient stock for ${item.name}`);
+          return res.status(200).send("Insufficient stock");
+        }
+      }
 
       await client.query("BEGIN");
 
-      const orderNumber = `ORD${Math.floor(100 + Math.random() * 900)}`;
+      const orderNumber = `ORD${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
       const orderResult = await client.query(
         `INSERT INTO orders 
@@ -155,21 +182,27 @@ exports.stripeWebhook = async (req, res) => {
           [order.id, item.product_id, item.name, item.price, item.quantity, item.image]
         );
 
-        await client.query(
+        const stockUpdate = await client.query(
           `UPDATE products SET stock = stock - $1 WHERE id = $2 AND stock >= $1`,
           [item.quantity, item.product_id]
         );
-      }
 
+        // ✅ Check if update actually happened
+        if (stockUpdate.rowCount === 0) {
+          throw new Error(`Insufficient stock for ${item.name}`);
+        }
+      }
       // Delivery token
       const deliveryToken = crypto.randomBytes(32).toString("hex");
       await client.query(`UPDATE orders SET delivery_token = $1 WHERE id = $2`, [deliveryToken, order.id]);
 
+      await client.query("COMMIT");
+      res.status(200).send("Order processed");
       // Emails
-      const userRes = await client.query(`SELECT name, email FROM users WHERE id = $1`, [user_id]);
+      const userRes = await pool.query(`SELECT name, email FROM users WHERE id = $1`, [user_id]);
       const user = userRes.rows[0];
 
-      const adminRes = await client.query(`SELECT email FROM users WHERE is_admin = true`);
+      const adminRes = await pool.query(`SELECT email FROM users WHERE is_admin = true`);
       const adminEmails = adminRes.rows.map(a => a.email);
 
       const htmlContent = `
@@ -255,9 +288,6 @@ exports.stripeWebhook = async (req, res) => {
         data: [{ id: order.id, customer_name: user.name, items, shipping_fee }],
         triggeredBy: "System",
       });
-
-      await client.query("COMMIT");
-      res.status(200).send("Order processed");
     } catch (err) {
       await client.query("ROLLBACK");
       console.error("Webhook Order Error:", err);
