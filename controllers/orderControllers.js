@@ -69,10 +69,10 @@ exports.createCheckoutSession = async (req, res) => {
 
     // ✅ Use automatic_payment_methods for Stripe to decide available methods
     const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card', 'bacs_debit'],
       mode: "payment",
       customer_email: user.email,
       line_items,
-      automatic_payment_methods: { enabled: true }, // <--- THIS ENABLES ALL SUPPORTED METHODS
       metadata: {
         user_id: user.id.toString(),
         shipping_address,
