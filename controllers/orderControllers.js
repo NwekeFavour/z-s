@@ -86,10 +86,12 @@ exports.createCheckoutSession = async (req, res) => {
 
     // 6️⃣ Create Checkout Session
     const session = await stripe.checkout.sessions.create({
-      payment_method_types: ["card", "bacs_debit"], // UK bank transfer included
       mode: "payment",
       customer_email: user.email,
       line_items,
+      automatic_payment_methods: {
+        enabled: true,
+      },
       metadata: {
         user_id: user.id.toString(),
         shipping_address,
