@@ -69,7 +69,6 @@ exports.createCheckoutSession = async (req, res) => {
 
     // ✅ Use automatic_payment_methods for Stripe to decide available methods
     const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card', 'bacs_debit'],
       mode: "payment",
       customer_email: user.email,
       line_items,
@@ -79,6 +78,7 @@ exports.createCheckoutSession = async (req, res) => {
         items: JSON.stringify(items),
         shipping_fee: shippingAmount.toFixed(2),
       },
+      automatic_payment_methods: { enabled: true },
       success_url: `${process.env.FRONTEND_URL}/settings?tab=My+Orders`,
       cancel_url: `${process.env.FRONTEND_URL}/cart`,
     });
