@@ -95,11 +95,6 @@ exports.createCheckoutSession = async (req, res) => {
   }
 };
 
-
-
-
-// ================= Stripe Webhook =================
-// ================= Stripe Webhook =================
 // ================= Stripe Webhook =================
 exports.stripeWebhook = async (req, res) => {
   let event;
@@ -865,15 +860,20 @@ exports.confirmDelivery = async (req, res) => {
 exports.getOrders = async (req, res) => {
   try {
     // 1️⃣ Fetch orders with customer info
-    const ordersResult = await pool.query(`
-      SELECT 
-        o.*,
-        u.name AS customer_name,
-        u.email AS customer_email
-      FROM orders o
-      JOIN users u ON o.user_id = u.id
-      ORDER BY o.created_at DESC
-    `);
+  const ordersResult = await pool.query(`
+  SELECT
+    o.*,
+    u.name AS customer_name,
+    u.email AS customer_email,
+    sa.phone_number AS phone_number,
+    sa.postcode AS postcode
+  FROM orders o
+  JOIN users u ON o.user_id = u.id
+  LEFT JOIN shipping_addresses sa ON sa.order_id = o.id
+  ORDER BY o.created_at DESC
+`);
+
+
 
     const orders = ordersResult.rows;
 
