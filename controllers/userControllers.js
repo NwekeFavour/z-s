@@ -418,48 +418,76 @@ exports.resetPassword = async (req, res) => {
 // Get user profile
 exports.getUserProfile = async (req, res) => {
   try {
-    const { rows } = await db.query('SELECT id, name, email, is_admin FROM users WHERE id = $1', [req.user.id]);
+    const { rows } = await db.query('SELECT id, name, email, phone_number, is_admin FROM users WHERE id = $1', [req.user.id]);
     if (rows.length === 0) return res.status(404).json({ message: 'User not found' });
-
-    res.json(rows[0]);
+    res.json(rows[0]);    
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: error.message });
   }
 };
 
-// =========================
 // Update user profile
 exports.updateUserProfile = async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password, phone_number } = req.body;
 
-    // Hash password only if provided
-    const hashedPassword = password ? await bcrypt.hash(password, 10) : undefined;
+    const fields = [];
+    const values = [];
+    let idx = 1;
+    let requiresReauth = false;
+
+    if (name) {
+      fields.push(`name = $${idx++}`);
+      values.push(name);
+    }
+
+    if (email) {
+      fields.push(`email = $${idx++}`);
+      values.push(email);
+      requiresReauth = true;
+    }
+
+    if (phone_number) {
+      fields.push(`phone_number = $${idx++}`);
+      values.push(phone_number);
+    }
+
+    if (password) {
+      const hashed = await bcrypt.hash(password, 10);
+      fields.push(`password = $${idx++}`);
+      values.push(hashed);
+      requiresReauth = true;
+    }
+
+    if (!fields.length) {
+      return res.status(400).json({ message: "No updates provided" });
+    }
 
     const query = `
       UPDATE users
-      SET name = COALESCE($1,name),
-          email = COALESCE($2,email),
-          password = COALESCE($3,password),
-          updated_at = NOW()
-      WHERE id = $4
-      RETURNING id, name, email
+      SET ${fields.join(", ")}, updated_at = NOW()
+      WHERE id = $${idx}
+      RETURNING id, name, email, phone_number, is_admin
     `;
-    const params = [name, email, hashedPassword, req.user.id];
 
-    const { rows } = await db.query(query, params);
+    values.push(req.user.id);
 
-    if (rows.length === 0)
-      return res.status(404).json({ message: 'User not found' });
+    const { rows } = await db.query(query, values);
 
-    // Return updated user (you can generate new token if you want)
-    res.json({ ...rows[0], token: generateToken(rows[0].id) });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: error.message });
+    res.json({
+      user: rows[0],
+      requiresReauth
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Profile update failed" });
   }
 };
+
+
+
+
 
 // =========================
 // Get all addresses
