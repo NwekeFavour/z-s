@@ -13,7 +13,7 @@ const generateToken = (userId) => {
 
 exports.sendOTP = async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, phone_number, password } = req.body;
 
     const userExists = await db.query("SELECT id FROM users WHERE email = $1", [email]);
     if (userExists.rows.length > 0)
@@ -25,9 +25,9 @@ exports.sendOTP = async (req, res) => {
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
     await db.query(
-      `INSERT INTO pending_users (name, email, password, otp, otp_expiry)
-       VALUES ($1, $2, $3, $4, NOW() + INTERVAL '10 minutes')`,
-      [name, email, hashedPassword, otp]
+      `INSERT INTO pending_users (name, email, phone_number, password, otp, otp_expiry)
+       VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '10 minutes')`,
+      [name, email, phone_number, hashedPassword, otp]
     );
 
     // Send OTP via Nodemailer
@@ -130,10 +130,10 @@ exports.verifyOTP = async (req, res) => {
 
     // 4️⃣ Create actual user
     const inserted = await db.query(
-      `INSERT INTO users (name, email, password, is_admin, created_at, updated_at)
-       VALUES ($1, $2, $3, false, NOW(), NOW())
-       RETURNING id, name, email, is_admin`,
-      [pendingUser.name, pendingUser.email, pendingUser.password]
+      `INSERT INTO users (name, email, phone_number, password, is_admin, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, false, NOW(), NOW())
+       RETURNING id, name, email, phone_number, is_admin`,
+      [pendingUser.name, pendingUser.email, pendingUser.phone_number, pendingUser.password]
     );
 
     // 5️⃣ Remove it from pending table
