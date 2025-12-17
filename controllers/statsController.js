@@ -18,6 +18,8 @@ exports.getCustomersCount = async (req, res) => {
       SELECT 
         u.id,
         u.name,
+        u.email,
+        u.phone_number,
         u.created_at AS joined,
         COALESCE(o.order_count, 0) AS orders,
         COALESCE(o.total_spent, 0) AS total_spent,
