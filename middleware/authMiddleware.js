@@ -9,31 +9,37 @@ exports.protect = async (req, res, next) => {
     req.headers.authorization &&
     req.headers.authorization.startsWith('Bearer')
   ) {
-    try {
-      // Extract token
-      token = req.headers.authorization.split(' ')[1];
+    token = req.headers.authorization.split(' ')[1];
 
+    try {
       // Verify token
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-      // Fetch user from PostgreSQL, exclude password
-      const query = 'SELECT id, name, email, is_admin FROM users WHERE id = $1';
+      // Fetch user including can_leave_feedback column
+      const query = `
+        SELECT 
+          id,
+          name,
+          email,
+          is_admin,
+          can_leave_feedback
+        FROM users
+        WHERE id = $1
+      `;
       const { rows } = await db.query(query, [decoded.id]);
 
-      if (rows.length === 0) {
+      if (!rows.length) {
         return res.status(401).json({ message: 'Not authorized, user not found' });
       }
 
       req.user = rows[0]; // attach user info to req
-      next();
+      return next();
     } catch (error) {
       console.error('Token verification failed:', error);
       return res.status(401).json({ message: 'Not authorized, token failed' });
     }
-  }
-
-  // If no token was provided
-  if (!token) {
+  } else {
+    // No token provided
     return res.status(401).json({ message: 'Not authorized, no token' });
   }
 };

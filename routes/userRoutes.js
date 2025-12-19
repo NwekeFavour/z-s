@@ -15,7 +15,8 @@ const {
   verifyOTP,
   sendOTP,
   updateShippingFee,
-  getShippingFee
+  getShippingFee,
+  submitFeedback
 } = require('../controllers/userControllers');
 const { protect } = require('../middleware/authMiddleware');
 const { adminOnly } = require('../middleware/adminMiddleware');
@@ -33,6 +34,9 @@ router.get('/me', protect, (req, res) => {
 // Password Recovery
 router.post('/forgot-password', forgotPassword);
 router.put('/reset-password/:token', resetPassword); // (this is for resetting after getting token)
+
+// feedback
+router.post('/feedback', protect, submitFeedback);
 
 // Profile
 router.get('/profile', protect, getUserProfile);

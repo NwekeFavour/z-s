@@ -167,6 +167,112 @@ exports.getShippingFee = async (req, res) => {
 };
 
 
+exports.submitFeedback = async (req, res) => {
+  const userId = req.user.id;
+  const { message, rating } = req.body;
+
+  try {
+    // Get user info
+    const userRes = await db.query(
+      `SELECT name, email FROM users WHERE id = $1`,
+      [userId]
+    );
+    const user = userRes.rows[0];
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Save feedback
+    await db.query(
+      `INSERT INTO feedback (user_id, message, rating)
+       VALUES ($1, $2, $3)`,
+      [userId, message, rating]
+    );
+
+    // Disable further feedback
+    await db.query(
+      `UPDATE users
+       SET can_leave_feedback = FALSE
+       WHERE id = $1`,
+      [userId]
+    );
+
+    // 📧 Send feedback email
+    const feedbackHtml = `
+      <div style="font-family: Arial, sans-serif; background: #f7f7f7; padding: 20px; color: #333;">
+        <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 8px;">
+
+          <!-- Header -->
+          <div style="background: #02498b; padding: 25px; text-align: center; color: #fff;">
+            <h1>ZandMarket</h1>
+            <p>Customer Feedback</p>
+          </div>
+
+          <!-- Body -->
+          <div style="padding: 25px;">
+            <p>Hello Team,</p>
+            <p>You’ve received new feedback from a customer.</p>
+
+            <h3 style="margin-top: 25px;">Customer Details</h3>
+            <table style="width:100%; border-collapse: collapse; margin-top: 10px;">
+              <tbody>
+                <tr>
+                  <td style="padding:10px; background:#f0f0f0; width:35%;"><strong>Name</strong></td>
+                  <td style="padding:10px; border-bottom:1px solid #eee;">${user.name}</td>
+                </tr>
+                <tr>
+                  <td style="padding:10px; background:#f0f0f0;"><strong>Email</strong></td>
+                  <td style="padding:10px; border-bottom:1px solid #eee;">${user.email}</td>
+                </tr>
+                <tr>
+                  <td style="padding:10px; background:#f0f0f0;"><strong>Rating</strong></td>
+                  <td style="padding:10px; border-bottom:1px solid #eee;">
+                    ⭐ ${rating} / 5
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+
+            <h3 style="margin-top: 25px;">Customer Message</h3>
+            <div
+              style="
+                background:#fafafa;
+                border:1px solid #eee;
+                border-radius:6px;
+                padding:15px;
+                margin-top:10px;
+                white-space: pre-line;
+              "
+            >
+              ${message}
+            </div>
+
+            <hr style="margin: 30px 0;" />
+
+            <p style="color:#666; font-size:14px;">
+              This feedback was submitted via the ZandMarket feedback form.
+            </p>
+          </div>
+        </div>
+      </div>
+    `;
+
+
+    await sendEmail({
+      to: process.env.FROM_EMAIL,
+      subject: "New Customer Feedback – ZandMarket",
+      html: feedbackHtml,
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Feedback error:", err);
+    res.status(500).json({ message: "Failed to submit feedback" });
+  }
+};
+
+
 
 exports.updateShippingFee = async (req, res) => {
   try {
@@ -243,21 +349,35 @@ exports.loginUser = async (req, res) => {
     const { email, password } = req.body;
     const { rows } = await db.query('SELECT * FROM users WHERE email = $1', [email]);
 
-    if (rows.length === 0) return res.status(401).json({ message: 'Invalid credentials' });
+    if (rows.length === 0) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
 
     const user = rows[0];
 
     const passwordMatch = await bcrypt.compare(password, user.password);
-    if (!passwordMatch) return res.status(401).json({ message: 'Invalid credentials' });
+    if (!passwordMatch) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    // ✅ Check if user has any orders
+    const ordersRes = await db.query('SELECT 1 FROM orders WHERE user_id = $1 LIMIT 1', [user.id]);
+    if (ordersRes.rows.length > 0 && !user.can_leave_feedback) {
+      // Update can_leave_feedback to TRUE
+      await db.query('UPDATE users SET can_leave_feedback = TRUE WHERE id = $1', [user.id]);
+      user.can_leave_feedback = true; // update locally for response
+    }
 
     res.json({
       _id: user.id,
       name: user.name,
       email: user.email,
       isAdmin: user.is_admin,
+      can_leave_feedback: user.can_leave_feedback, // include feedback flag
       token: generateToken(user.id),
       message: 'User successfully logged in'
     });
+
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: error.message });
@@ -418,7 +538,7 @@ exports.resetPassword = async (req, res) => {
 // Get user profile
 exports.getUserProfile = async (req, res) => {
   try {
-    const { rows } = await db.query('SELECT id, name, email, phone_number, is_admin FROM users WHERE id = $1', [req.user.id]);
+    const { rows } = await db.query('SELECT id, name, email, phone_number, can_leave_feedback, is_admin FROM users WHERE id = $1', [req.user.id]);
     if (rows.length === 0) return res.status(404).json({ message: 'User not found' });
     res.json(rows[0]);    
   } catch (error) {
