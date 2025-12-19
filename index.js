@@ -23,14 +23,25 @@ const authLimiter = rateLimit({
   message: "Too many login attempts, try again later.",
 });
 
+const publicLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+});
+
+const adminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 2000,
+  skip: (req) => req.user?.role === 'admin'
+});
+
 const { stripeWebhook, getOrderToggle, updateOrderToggle } = require('./controllers/orderControllers')
 app.post("/api/webhooks/stripe",
   bodyParser.raw({ type: "application/json" }),
   stripeWebhook
 );
 
+
 app.use(helmet());
-app.use(rateLimit({ windowMs: 15*60*1000, max: 200 }));
 app.use(express.json());
 const cartRoutes = require('./routes/cartRoutes');
 const productRoutes = require("./routes/productRoutes")
@@ -47,10 +58,9 @@ app.put('/api/settings/abled', protect, adminOnly, updateOrderToggle);
 app.use('/api/cart', cartRoutes); // Use cart routes
 app.use('/api/auth', authLimiter, userRoutes); // use user routes
 app.use('/api',  statsRoutes); // user stats routes
-app.use('/api/products', productRoutes); // use product routes
-app.use('/api/orders', orderRoutes);
+app.use('/api/products', adminLimiter, productRoutes); // use product routes
+app.use('/api/orders', publicLimiter, orderRoutes);
 app.use('/api/notifications', notifyRoutes)
-app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100 }));
     
 app.get('/test-db', async (req, res) => {
   try {
