@@ -270,7 +270,7 @@ exports.submitFeedback = async (req, res) => {
 
     await sendEmail({
       from: `"ZandMarket Feedback" <${process.env.FROM_EMAIL}>`,
-      to: "nwekefavour1315@gmail.com",
+      to: "codextechng@gmail.com",
       replyTo: user.email, 
       subject: "New Customer Feedback – ZandMarket",
       html: feedbackHtml,
