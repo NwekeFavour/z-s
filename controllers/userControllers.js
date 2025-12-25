@@ -260,10 +260,22 @@ exports.submitFeedback = async (req, res) => {
 
 
     await sendEmail({
+      from: `"ZandMarket Feedback" <${process.env.FROM_EMAIL}>`,
       to: process.env.FROM_EMAIL,
+      replyTo: user.email, 
       subject: "New Customer Feedback – ZandMarket",
       html: feedbackHtml,
     });
+
+
+    await sendEmail({
+      from: `"ZandMarket Feedback" <${process.env.FROM_EMAIL}>`,
+      to: "nwekefavour1315@gmail.com",
+      replyTo: user.email, 
+      subject: "New Customer Feedback – ZandMarket",
+      html: feedbackHtml,
+    });
+
 
     res.json({ success: true });
   } catch (err) {
